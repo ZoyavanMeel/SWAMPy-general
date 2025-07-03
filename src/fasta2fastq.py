@@ -1,6 +1,6 @@
 # All this file does is take a bed file of primers (tab separated with columns 'genome', 'start', 'end', 'name', 'pool', 'sense')
-# and print out a fastq of these primer with dummy quality scores. 
-# It's not used in the main code - but it can be handy if you want to use a different set of primers from ARTIC V3. 
+# and print out a fastq of these primer with dummy quality scores.
+# It's not used in the main code - but it can be handy if you want to use a different set of primers from ARTIC V3.
 import pandas as pd
 from Bio import SeqIO
 from Bio.SeqIO.FastaIO import SeqRecord
