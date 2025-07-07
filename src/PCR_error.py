@@ -1,3 +1,4 @@
+from time import perf_counter
 import os
 import numpy as np
 import random
@@ -29,51 +30,75 @@ def alts(ref: str, type: str, len: int = 0) -> str:
         return ref + "".join(insert)
 
 
-def amplicon_lookup(PRIMER_BED: str, position: int, recurrence: str) -> list[str]:
+def read_primer_bed_for_lookup(path: str) -> pd.DataFrame:
+    df = pd.read_csv(path, sep="\t", names=["Chr", "Start", "End", "Amplicon", "Pool", "Strand"])
+    name_df = hp.process_amplicon_names(df["Amplicon"])
+    df["handedness"] = name_df["handedness"]
+    df["amplicon_number"] = name_df["amp_num"]
+    df.drop(["Chr", "Amplicon", "Pool", "Strand"], inplace=True, axis=1)
+    del name_df
+
+    return pd.merge(
+        df.loc[df["handedness"] == "LEFT"],
+        df.loc[df["handedness"] == "RIGHT"],
+        on=["amplicon_number"]
+    )
+
+
+def amplicon_lookup(primer_df: pd.DataFrame, position: int, recurrent: bool) -> list[str]:
     # Find amplicons corresponding to a given position
 
-    df = pd.read_csv(PRIMER_BED, sep="\t", names=["Chr", "Start", "End", "Amplicon", "Pool", "Strand"])
-    df["Handedness"] = df.apply(lambda x: x.Amplicon.split("_")[-1], axis=1)
-    df["Amp_no"] = df.apply(lambda x: x.Amplicon.split("_")[-2], axis=1)
-    df.drop(["Chr", "Amplicon", "Pool", "Strand"], inplace=True, axis=1)
+    mask = (position >= primer_df["Start_x"]) & (position <= primer_df["End_y"])
+    corresponding_amplicons = primer_df.loc[mask, "amplicon_number"].tolist()
 
-    df = pd.merge(
-        df.loc[df["Handedness"] == "LEFT"],
-        df.loc[df["Handedness"] == "RIGHT"],
-        on=["Amp_no"]
+    if len(corresponding_amplicons) > 0 and not recurrent:
+        return random.sample(corresponding_amplicons, k=1)
+    return corresponding_amplicons
+
+
+def no_del_in_disallowed(errors: pd.DataFrame, disallowed: np.ndarray) -> pd.DataFrame:
+    dels = errors["errortype"] == "DEL"
+    deletions = errors[dels].copy()
+
+    if deletions.empty:
+        return errors
+
+    deletions["start"] = deletions["pos"]
+    deletions["end"] = deletions["pos"] + deletions["length"]
+
+    # For each deletion, check if any disallowed position is inside [start, end]
+    overlaps = (
+        deletions["start"].to_numpy().reshape(-1, 1) <= disallowed
+    ) & (
+        deletions["end"].to_numpy().reshape(-1, 1) >= disallowed
     )
-    corresponding_amplicons = list(df.loc[(df["Start_x"] <= position) & (position <= df["End_y"]), "Amp_no"])
+    deletions["overlaps"] = overlaps.any(axis=1)
 
-    if len(corresponding_amplicons) > 0:
-        sample_amplicon = random.sample(corresponding_amplicons, k=1)
-    else:
-        sample_amplicon = corresponding_amplicons
+    errors_clean = pd.concat([
+        deletions[~deletions["overlaps"]],
+        errors[~dels],
+    ])
 
-    if recurrence == "Recurrent":
-        return corresponding_amplicons
-    else:
-        return sample_amplicon
+    return errors_clean.drop(columns=["start", "end", "overlaps"])
 
 
 def add_PCR_errors(
-    df_amplicons, genome_abundances, PRIMER_BED, REFERENCE, INDEX_BASE, REF_NAME, AMPLICONS_FOLDER,
-    U_SUBS_RATE, U_INS_RATE, U_DEL_RATE, R_SUBS_RATE, R_INS_RATE, R_DEL_RATE, DEL_LENGTH_GEOMETRIC_PARAMETER, INS_MAX_LENGTH,
-    SUBS_VAF_DIRICHLET_PARAMETER, INS_VAF_DIRICHLET_PARAMETER, DEL_VAF_DIRICHLET_PARAMETER,
-    R_SUBS_VAF_DIRICHLET_PARAMETER, R_INS_VAF_DIRICHLET_PARAMETER, R_DEL_VAF_DIRICHLET_PARAMETER, DISALLOWED_POSITIONS
+    df_amplicons: pd.DataFrame, genome_abundances: dict,
+    PATHS: dict[str, str], REF_NAME: str, RATES: dict[str, float],
+    DEL_LENGTH_GEOMETRIC_PARAMETER: float, INS_MAX_LENGTH: int,
+    VAF_PARAMETER_DICT: dict[str, float], R_VAF_PARAMETER_DICT: dict[str, float],
+    DISALLOWED_POSITIONS: set[int]
 ):
     # Z: what is this function even. 300 line monstrosity
 
-    REF = SeqIO.read(REFERENCE, format="fasta")
-    VAF = dict(SUBS=SUBS_VAF_DIRICHLET_PARAMETER, INS=INS_VAF_DIRICHLET_PARAMETER, DEL=DEL_VAF_DIRICHLET_PARAMETER)
-    R_VAF = dict(SUBS=R_SUBS_VAF_DIRICHLET_PARAMETER,
-                 INS=R_INS_VAF_DIRICHLET_PARAMETER, DEL=R_DEL_VAF_DIRICHLET_PARAMETER)
+    REF = SeqIO.read(PATHS["REFERENCE"], format="fasta")
 
-    U_SUBS_COUNT = int(np.random.poisson(U_SUBS_RATE*len(REF.seq), 1))  # unique
-    U_INS_COUNT = int(np.random.poisson(U_INS_RATE*len(REF.seq), 1))  # unique
-    U_DEL_COUNT = int(np.random.poisson(U_DEL_RATE*len(REF.seq), 1))  # unique
-    R_SUBS_COUNT = int(np.random.poisson(R_SUBS_RATE*len(REF.seq), 1))  # recurrent
-    R_INS_COUNT = int(np.random.poisson(R_INS_RATE*len(REF.seq), 1))  # recurrent
-    R_DEL_COUNT = int(np.random.poisson(R_DEL_RATE*len(REF.seq), 1))  # recurrent
+    U_SUBS_COUNT = int(np.random.poisson(RATES["U_SUBS_RATE"]*len(REF.seq), 1))  # unique
+    U_INS_COUNT = int(np.random.poisson(RATES["U_INS_RATE"]*len(REF.seq), 1))  # unique
+    U_DEL_COUNT = int(np.random.poisson(RATES["U_DEL_RATE"]*len(REF.seq), 1))  # unique
+    R_SUBS_COUNT = int(np.random.poisson(RATES["R_SUBS_RATE"]*len(REF.seq), 1))  # recurrent
+    R_INS_COUNT = int(np.random.poisson(RATES["R_INS_RATE"]*len(REF.seq), 1))  # recurrent
+    R_DEL_COUNT = int(np.random.poisson(RATES["R_DEL_RATE"]*len(REF.seq), 1))  # recurrent
     SUBS_COUNT = U_SUBS_COUNT+R_SUBS_COUNT
     INS_COUNT = U_INS_COUNT+R_INS_COUNT
     DEL_COUNT = U_DEL_COUNT+R_DEL_COUNT
@@ -84,52 +109,47 @@ def add_PCR_errors(
     # create a dataframe of errors that we want to introduce
     errors = pd.DataFrame(dict(errortype=["SUBS"]*SUBS_COUNT + ["DEL"]*DEL_COUNT + ["INS"]*INS_COUNT))
 
-    errors["recurrence"] = ["Recurrent"]*R_SUBS_COUNT+["Unique"]*U_SUBS_COUNT+["Recurrent"] * \
-        R_DEL_COUNT+["Unique"]*U_DEL_COUNT+["Recurrent"]*R_INS_COUNT+["Unique"]*U_INS_COUNT
+    # Z: recurrent = True; unique = False
+    errors["recurrent"] = [True]*R_SUBS_COUNT + [False]*U_SUBS_COUNT + [True]*R_DEL_COUNT + \
+        [False]*U_DEL_COUNT + [True]*R_INS_COUNT + [False]*U_INS_COUNT
 
     errors["genome"] = errors.apply(
         lambda x: random.choices(
             population=list(genome_abundances.keys()),
             weights=list(genome_abundances.values()),
             k=1
-        ) if x.recurrence == "Unique" else list(genome_abundances.keys()), axis=1
+        ) if not x["recurrent"] else list(genome_abundances.keys()), axis=1
     )
+
     errors["mut_indices"] = errors.index
     errors["length"] = [1]*SUBS_COUNT +\
         list(np.random.geometric(p=DEL_LENGTH_GEOMETRIC_PARAMETER, size=DEL_COUNT)) +\
         random.choices(population=list(range(1, INS_MAX_LENGTH+1)), k=INS_COUNT)
+
     errors["pos"] = random.sample(population=list(range(len(REF.seq))), k=SUBS_COUNT+INS_COUNT+DEL_COUNT)
+
     errors["ref"] = errors.apply(
-        lambda x: REF.seq[x.pos] if x.errortype != "DEL" else REF.seq[x.pos-1:x.pos+x.length],
+        lambda x: REF.seq[x["pos"]] if x["errortype"] != "DEL" else REF.seq[x["pos"]-1:x["pos"]+x["length"]],
         axis=1
     )
-    errors["alt"] = errors.apply(lambda x: alts(x.ref, x.errortype, x.length), axis=1)
+    errors["alt"] = errors.apply(lambda x: alts(x["ref"], x["errortype"], x["length"]), axis=1)
     errors["VAF"] = errors.apply(
-        lambda x: np.random.dirichlet(VAF[x.errortype], size=None)[0] if x.recurrence == "Unique"
-        else np.random.dirichlet(R_VAF[x.errortype], size=None)[0],
+        lambda x: np.random.dirichlet(VAF_PARAMETER_DICT[x["errortype"]], size=None)[0] if not x["recurrent"]
+        else np.random.dirichlet(R_VAF_PARAMETER_DICT[x["errortype"]], size=None)[0],
         axis=1
     )
-    errors["amplicons"] = errors.apply(lambda x: amplicon_lookup(PRIMER_BED, x.pos, x.recurrence), axis=1)
-    errors = errors.loc[errors['VAF'] != 0,]
+
+    primer_df = read_primer_bed_for_lookup(PATHS["PRIMER_BED"])
+    errors["amplicons"] = errors.apply(lambda x: amplicon_lookup(primer_df, x["pos"], x["recurrent"]), axis=1)
+    errors = errors.loc[errors['VAF'] != 0]
+
     # don't allow substitutions in the disallowed positions
-    errors = errors[~(
-        (errors.errortype == "SUBS") & (errors.pos.isin(DISALLOWED_POSITIONS))
-    )]
+    errors.at[0, "errortype"] = "DEL"
+    errors = errors[~(errors["errortype"] == "SUBS") | ~(errors["pos"].isin(DISALLOWED_POSITIONS))]
 
     # don't allow deletions of the disallowed positions
-    def deletion_overlaps_disallowed_pos(row):
-        if row.errortype != "DEL":
-            return False
-
-        s = {x for x in DISALLOWED_POSITIONS if x >= row.pos}.intersection(
-            {x for x in DISALLOWED_POSITIONS if x <= (row.pos + row.length)}
-        )
-
-        if len(s) > 0:
-            return True
-        return False
-
-    errors = errors[~errors.apply(deletion_overlaps_disallowed_pos, axis=1)]
+    if len(DISALLOWED_POSITIONS) > 0:
+        errors = no_del_in_disallowed(errors, np.array(list(DISALLOWED_POSITIONS)))
 
     # all amplicons to be mutated
     error_amplicons = []
@@ -137,7 +157,12 @@ def add_PCR_errors(
         error_amplicons.extend(i)
 
     # corresponding error index for that amplicon
-    indices = [[errors.index[a]]*len(errors.loc[a, "amplicons"]) for a in range(errors.shape[0])]
+    # print(errors.shape)
+    # print(errors.index)
+    # print(errors["amplicons"])
+    # quit()
+    # TODO: code crashes here because of mishandling of disallowed positions
+    indices = [[errors.index[a]] * len(errors.loc[a, "amplicons"]) for a in range(errors.shape[0])]
     indices2 = []
     for i in indices:
         indices2.extend(i)
@@ -148,191 +173,173 @@ def add_PCR_errors(
 
     # Z: build index for reference (SWAMPy originally ships the Wuhan index)
     idx_exts = [".1.bt2", ".2.bt2", ".3.bt2", ".4.bt2", ".rev.1.bt2", ".rev.2.bt2"]
-    if not all([os.path.exists(INDEX_BASE+ext) for ext in idx_exts]):
-        hp.build_index(REFERENCE, INDEX_BASE)
+    if not all([os.path.exists(PATHS["INDEX_BASE"]+ext) for ext in idx_exts]):
+        hp.build_index(PATHS["REFERENCE"], PATHS["INDEX_BASE"])
 
-    for i in df_amplicons.itertuples():
+    for _, row in df_amplicons.iterrows():
         # Sometimes more than 1 error are introduced to the same amplicon.
         # Find all errors that will be introduced to that amplicon
         mut_indices = [indices2[idx] for idx, a in enumerate(error_amplicons) if a == str(
-            i.amplicon_number) and i.ref in errors.loc[indices2[idx], "genome"]]
+            row["amplicon_number"]) and row["ref"] in errors.loc[indices2[idx], "genome"]]
 
-        if mut_indices == []:
+        if len(mut_indices) == 0:
+            amplicons.append(row["amplicon_filepath"])
+            n_reads.append(row["n_reads"])
+            continue
 
-            amplicons.append(i.amplicon_filepath)
-            n_reads.append(i.n_reads)
+        # | and & are problematic for bash (subprocess), escape those.
+        amp = row["amplicon_filepath"].replace("&", "\\&").replace("|", "\\|")
 
+        # align the original amplicon to the reference because there could be real indels in the source genome.
+        align_df = align_amp_to_ref(PATHS, amp)
+
+        # if the amplicon contains too many Ns it will not align, skip introducing PCR error to those
+        if align_df["CIGAR"][0] == "*":
+            amplicons.append(row.amplicon_filepath)
+            n_reads.append(row.n_reads)
         else:
-            # | and & are problematic for bash (subprocess), escape those.
-            amp = i.amplicon_filepath.replace("&", "\\&").replace("|", "\\|")
+            # Record the CIGAR as a long string. i.e. "MMMII" instead of "3M2I"
+            CIGAR = ""
+            for idx, cigar in enumerate(re.split("(M|D|I)", align_df.CIGAR[0])[:-1]):
+                if idx % 2 == 0:
+                    prev = cigar[:]
+                else:
+                    CIGAR += cigar*int(prev)
 
-            # align the original amplicon to the reference because there could be real indels in the source genome.
+            # Start position and the sequence of the alignment(amplicon)
+            start_p = align_df.start[0]-1
+            seq = align_df.seq[0]
 
-            alignment = subprocess.run(
-                ["bowtie2", "-x", INDEX_BASE, "-f", f"{AMPLICONS_FOLDER}/{amp}"],
-                capture_output=True
-            )
-            alignment = StringIO(alignment.stdout.decode("UTF-8"))
+            # Create an empty dataframe to hold how many reads each error combination will produce at the end.
+            reads_df = pd.DataFrame()
 
-            # read alignment data as a dataframe
-            df = pd.read_csv(
-                alignment,
-                sep="\t",
-                skiprows=[0, 1, 2],
-                header=None,
-                names=[i for i in range(10)],
-                usecols=[i for i in range(10)]
-            )
-            df = pd.DataFrame(df[[0, 3, 5, 9]])
-            df = df.rename(columns={0: "name", 3: "start", 5: "CIGAR", 9: "seq"})
+            # For each error that will be introduced to this amplicon,
+            # find the indices for slicing wrt to amplicon seq left end.
+            seq_pos = []
+            for mut_idx in mut_indices:
 
-            # if the amplicon contains too many Ns it will not align, skip introducing PCR error to those
-            if df.CIGAR[0] == "*":
-                amplicons.append(i.amplicon_filepath)
-                n_reads.append(i.n_reads)
-            else:
-                # Record the CIGAR as a long string. i.e. "MMMII" instead of "3M2I"
-                CIGAR = ""
-                for idx, cigar in enumerate(re.split("(M|D|I)", df.CIGAR[0])[:-1]):
-                    if idx % 2 == 0:
-                        prev = cigar[:]
-                    else:
-                        CIGAR += cigar*int(prev)
+                # we aim for the error's position wrt reference genome
+                aim = errors.loc[mut_idx, "pos"]
 
-                # Start position and the sequence of the alignment(amplicon)
-                start_p = df.start[0]-1
-                seq = df.seq[0]
+                # amplicon slicing index starts from 0 (left end)
+                seq_idx = 0
 
-                # Create an empty dataframe to hold how many reads each error combination will produce at the end.
-                reads_df = pd.DataFrame()
+                # reference index starts from the position where amplicon alignment starts.
+                ref_idx = start_p
 
-                # For each error that will be introduced to this amplicon,
-                # find the indices for slicing wrt to amplicon seq left end.
-                seq_pos = []
-                for mut_idx in mut_indices:
+                for c_idx, c in enumerate(CIGAR):
+                    if ref_idx == aim:
+                        seq_pos.append(seq_idx)
+                        break
+                    if c == "M":
+                        seq_idx += 1
+                        ref_idx += 1
+                    elif c == "D":
+                        ref_idx += 1
+                    elif c == "I":
+                        seq_idx += 1
+                    if c_idx == len(CIGAR)-1 and ref_idx == aim:  # final letter
+                        seq_pos.append(seq_idx)
+                    # CIGAR is shorter, all deletions at the end, skip the error
+                    elif c_idx == len(CIGAR)-1 and ref_idx != aim:
+                        logging.warning(
+                            f'A PCR error is skipped since the position does not exist in the amplicon {i.amplicon_filepath}. This is not a significant problem if you see only one of this warning. Otherwise see Extra options and potential bugs section.')
+                        seq_pos.append(ISSUE_6_BUG_CODE)  # dummy placeholder (issue #6)
 
-                    # we aim for the error's position wrt reference genome
-                    aim = errors.loc[mut_idx, "pos"]
+                # How many reads this specific error will have
+                mut_reads = np.random.binomial(i.n_reads, errors.loc[mut_idx, "VAF"])
 
-                    # amplicon slicing index starts from 0 (left end)
-                    seq_idx = 0
-
-                    # reference index starts from the position where amplicon alignment starts.
-                    ref_idx = start_p
-
-                    for c_idx, c in enumerate(CIGAR):
-                        if ref_idx == aim:
-                            seq_pos.append(seq_idx)
-                            break
-                        if c == "M":
-                            seq_idx += 1
-                            ref_idx += 1
-                        elif c == "D":
-                            ref_idx += 1
-                        elif c == "I":
-                            seq_idx += 1
-                        if c_idx == len(CIGAR)-1 and ref_idx == aim:  # final letter
-                            seq_pos.append(seq_idx)
-                        # CIGAR is shorter, all deletions at the end, skip the error
-                        elif c_idx == len(CIGAR)-1 and ref_idx != aim:
-                            logging.warning(
-                                f'A PCR error is skipped since the position does not exist in the amplicon {i.amplicon_filepath}. This is not a significant problem if you see only one of this warning. Otherwise see Extra options and potential bugs section.')
-                            seq_pos.append(ISSUE_6_BUG_CODE)  # dummy placeholder (issue #6)
-
-                    # How many reads this specific error will have
-                    mut_reads = np.random.binomial(i.n_reads, errors.loc[mut_idx, "VAF"])
-
-                    # if number of reads and/or VAF are small, this can be 0
-                    if mut_reads == 0:
-                        pass
-
-                    else:
-                        # Take that many samples from the total of the imaginary reads of that amplicon
-                        reads = sorted(random.sample(range(i.n_reads), k=mut_reads))
-                        reads = [str(a) for a in reads]
-                        reads = [a+"," for a in reads]  # , will be used for grouping
-
-                        muts = [str(mut_idx)]*mut_reads  # keep track of the mutation
-                        muts = [a+"," for a in muts]
-
-                        read_df = pd.DataFrame(dict(reads=reads, muts=muts))
-                        # reads_df=reads_df.append(read_df,ignore_index=True)
-                        reads_df = pd.concat([reads_df, read_df], ignore_index=True)
-
-                # if there are no errors with a non-zero count, skip introducing errors to that amplicon
-                if reads_df.empty:
-                    amplicons.append(i.amplicon_filepath)
-                    n_reads.append(i.n_reads)
+                # if number of reads and/or VAF are small, this can be 0
+                if mut_reads == 0:
+                    pass
 
                 else:
-                    # group wrt imaginary reads to see which ones ended up with wich errors
-                    reads_df = reads_df.groupby("reads").sum()
-                    reads_df["count"] = 1
-                    # group by different combinations of errors to count how many read each combination will produce.
-                    reads_df = reads_df.groupby("muts", as_index=False).sum()
-                    # remove the , and turn tham into a list
-                    reads_df["muts"] = reads_df.apply(lambda x: x.muts.split(",")[:-1], axis=1)
+                    # Take that many samples from the total of the imaginary reads of that amplicon
+                    reads = sorted(random.sample(range(i.n_reads), k=mut_reads))
+                    reads = [str(a) for a in reads]
+                    reads = [a+"," for a in reads]  # , will be used for grouping
 
-                    # create a dataframe of all errors of the amplicon. Contains pos, mut_index, errortype, length, alt
-                    seq_pos_df = pd.DataFrame(dict(seq_pos=seq_pos, mut_indices=mut_indices))
-                    seq_pos_df = seq_pos_df.merge(
-                        errors[["errortype", "mut_indices", "length", "alt"]], on="mut_indices")
-                    # skip errors that correspond to deletions (issue #6)
-                    seq_pos_df = seq_pos_df[seq_pos_df['seq_pos'] != ISSUE_6_BUG_CODE]
+                    muts = [str(mut_idx)]*mut_reads  # keep track of the mutation
+                    muts = [a+"," for a in muts]
 
-                    # amplicon's number of reads - total count of all error combination versions is the count of non-mutated (old) version.
-                    amplicons.append(i.amplicon_filepath)
-                    n_reads.append(i.n_reads - sum(reads_df["count"]))
+                    read_df = pd.DataFrame(dict(reads=reads, muts=muts))
+                    # reads_df=reads_df.append(read_df,ignore_index=True)
+                    reads_df = pd.concat([reads_df, read_df], ignore_index=True)
 
-                    # for all error combination versions of the amplicon
-                    for idx, pcr_error in enumerate(reads_df.itertuples()):
-                        # if a specific combination has 0 reads, pass
-                        if pcr_error.count == 0:
-                            pass
-                        else:
-                            # create a final df that contains all the errors in that specific combination
-                            final_df = seq_pos_df.loc[seq_pos_df["mut_indices"].isin([int(a) for a in pcr_error.muts]),]
-                            final_df = final_df.sort_values('seq_pos')
-                            final_df.reset_index(drop=True, inplace=True)
+            # if there are no errors with a non-zero count, skip introducing errors to that amplicon
+            if reads_df.empty:
+                amplicons.append(i.amplicon_filepath)
+                n_reads.append(i.n_reads)
 
-                            # introduce those errors one by one.
-                            new_seq = ""
-                            for indx, final in enumerate(final_df.itertuples()):
+            else:
+                # group wrt imaginary reads to see which ones ended up with wich errors
+                reads_df = reads_df.groupby("reads").sum()
+                reads_df["count"] = 1
+                # group by different combinations of errors to count how many read each combination will produce.
+                reads_df = reads_df.groupby("muts", as_index=False).sum()
+                # remove the , and turn tham into a list
+                reads_df["muts"] = reads_df.apply(lambda x: x.muts.split(",")[:-1], axis=1)
 
-                                # the part up to the first error is the same
-                                if indx == 0:
-                                    new_seq = new_seq + seq[0:final.seq_pos]
+                # create a dataframe of all errors of the amplicon. Contains pos, mut_index, errortype, length, alt
+                seq_pos_df = pd.DataFrame(dict(seq_pos=seq_pos, mut_indices=mut_indices))
+                seq_pos_df = seq_pos_df.merge(
+                    errors[["errortype", "mut_indices", "length", "alt"]], on="mut_indices")
+                # skip errors that correspond to deletions (issue #6)
+                seq_pos_df = seq_pos_df[seq_pos_df['seq_pos'] != ISSUE_6_BUG_CODE]
 
-                                # if an error is substition or indel, take the part up to and excluding the error position
-                                # add alternative instead of the ref at error pos.
-                                if final.errortype == "SUBS" or final.errortype == "INS":
-                                    new_seq = new_seq+final.alt
-                                    # then add the part up to the next error
-                                    try:
-                                        new_seq = new_seq + seq[final.seq_pos+1:final_df.loc[indx+1, "seq_pos"]]
-                                    # if it is the last error, add all the remaining sequence
-                                    except KeyError:
-                                        new_seq = new_seq + seq[final.seq_pos+1:]
+                # amplicon's number of reads - total count of all error combination versions is the count of non-mutated (old) version.
+                amplicons.append(i.amplicon_filepath)
+                n_reads.append(i.n_reads - sum(reads_df["count"]))
 
-                                elif final.errortype == "DEL":
-                                    # if it is a deletion add the next section of the sequence but leave out the first n bases of it
-                                    try:
-                                        new_seq = new_seq + seq[
-                                            final.seq_pos + 1:final_df.loc[indx+1, "seq_pos"]
-                                        ][final.length-1:]
-                                    except KeyError:
-                                        new_seq = new_seq + seq[final.seq_pos+1:][final.length-1:]
+                # for all error combination versions of the amplicon
+                for idx, pcr_error in enumerate(reads_df.itertuples()):
+                    # if a specific combination has 0 reads, pass
+                    if pcr_error.count == 0:
+                        pass
+                    else:
+                        # create a final df that contains all the errors in that specific combination
+                        final_df = seq_pos_df.loc[seq_pos_df["mut_indices"].isin([int(a) for a in pcr_error.muts]),]
+                        final_df = final_df.sort_values('seq_pos')
+                        final_df.reset_index(drop=True, inplace=True)
 
-                            # add the new amplicon to the list
-                            new_path = i.amplicon_filepath[:-6] + "_p" + str(idx+1) + ".fasta"
-                            amplicons.append(new_path)
-                            n_reads.append(pcr_error.count)
+                        # introduce those errors one by one.
+                        new_seq = ""
+                        for indx, final in enumerate(final_df.itertuples()):
 
-                            # write the fasta file of the new amplicon.
-                            # Name all the PCR error combinations as _p1, _p2 and etc.
-                            with open(f"{AMPLICONS_FOLDER}/{new_path}", "w") as new_a:
-                                new_a.write(f">{new_path[:-6]}\n")
-                                new_a.write(new_seq + "\n\n")
+                            # the part up to the first error is the same
+                            if indx == 0:
+                                new_seq = new_seq + seq[0:final.seq_pos]
+
+                            # if an error is substition or indel, take the part up to and excluding the error position
+                            # add alternative instead of the ref at error pos.
+                            if final.errortype == "SUBS" or final.errortype == "INS":
+                                new_seq = new_seq+final.alt
+                                # then add the part up to the next error
+                                try:
+                                    new_seq = new_seq + seq[final.seq_pos+1:final_df.loc[indx+1, "seq_pos"]]
+                                # if it is the last error, add all the remaining sequence
+                                except KeyError:
+                                    new_seq = new_seq + seq[final.seq_pos+1:]
+
+                            elif final.errortype == "DEL":
+                                # if it is a deletion add the next section of the sequence but leave out the first n bases of it
+                                try:
+                                    new_seq = new_seq + seq[
+                                        final.seq_pos + 1:final_df.loc[indx+1, "seq_pos"]
+                                    ][final.length-1:]
+                                except KeyError:
+                                    new_seq = new_seq + seq[final.seq_pos+1:][final.length-1:]
+
+                        # add the new amplicon to the list
+                        new_path = i.amplicon_filepath[:-6] + "_p" + str(idx+1) + ".fasta"
+                        amplicons.append(new_path)
+                        n_reads.append(pcr_error.count)
+
+                        # write the fasta file of the new amplicon.
+                        # Name all the PCR error combinations as _p1, _p2 and etc.
+                        with open(os.path.join(PATHS['AMPLICONS_FOLDER'], new_path), "w") as new_a:
+                            new_a.write(f">{new_path[:-6]}\n")
+                            new_a.write(new_seq + "\n\n")
 
     # this is for optional VCF output.
     errors['chr'] = REF_NAME
@@ -341,8 +348,29 @@ def add_PCR_errors(
     errors['id'] = "."
     errors['pos_0'] = errors.apply(lambda x: x.pos if x.errortype != "DEL" else x.pos-1, axis=1)
     errors['pos_1'] = errors.apply(lambda x: x.pos_0+1, axis=1)
-    errors['info'] = errors.apply(lambda x: "VAF=%.5f" % round(x.VAF, 5) + f";REC={x.recurrence[0]}", axis=1)
+    def r_or_u(x): return "R" if x["recurrent"] else "U"
+    errors['info'] = errors.apply(lambda x: "VAF=%.5f" % round(x.VAF, 5) + f";REC={r_or_u(x)}", axis=1)
     errors.sort_values("pos", inplace=True)
     vcf_errordf = errors.loc[:, ["chr", "pos_1", "id", "ref", "alt", "qual", "filter", "info"]]
 
     return amplicons, n_reads, vcf_errordf
+
+
+def align_amp_to_ref(PATHS, amp):
+    alignment = subprocess.run(
+        ["bowtie2", "-x", PATHS['INDEX_BASE'], "-f", f"{PATHS['AMPLICONS_FOLDER']}/{amp}"],
+        capture_output=True
+    )
+    alignment = StringIO(alignment.stdout.decode("UTF-8"))
+
+    # read alignment data as a dataframe
+    align_df = pd.read_csv(
+        alignment, sep="\t",
+        skiprows=[0, 1, 2], header=None,
+        names=[i for i in range(10)],
+        usecols=[i for i in range(10)]
+    )
+    print(align_df.head())
+    quit()
+    align_df = align_df[[0, 3, 5, 9]].rename(columns={0: "name", 3: "start", 5: "CIGAR", 9: "seq"})
+    return align_df
