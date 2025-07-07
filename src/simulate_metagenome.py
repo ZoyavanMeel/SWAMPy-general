@@ -33,7 +33,7 @@ QPROF2 = None
 SEED = np.random.randint(1000000000)
 AMPLICON_DISTRIBUTION = "DIRICHLET_1"
 AMPLICON_PSEUDOCOUNTS = 200
-DISALLOWED_POSITIONS = ""
+DISALLOWED_POSITIONS = {}
 FRAGMENT_AMPLICONS = False
 FRAGMENT_LEN_MEAN = 0
 FRAGMENT_LEN_SD = 0
@@ -55,7 +55,6 @@ R_DEL_RATE = 0
 
 DEL_LENGTH_GEOMETRIC_PARAMETER = 0.69
 INS_MAX_LENGTH = 14
-DISALLOWED_POSITIONS = ""
 
 SUBS_VAF_DIRICHLET_PARAMETER = "0.29,1.89"
 INS_VAF_DIRICHLET_PARAMETER = "0.33,0.45"
@@ -149,7 +148,7 @@ def setup_parser() -> argparse.ArgumentParser:
     parser.add_argument("--r_ins_VAF_alpha", "-riv",
                         help="alpha1,alpha2 of the Dirichlet distribution for VAF of the recurrent PCR error. Default is equal to unique erros", default=INS_VAF_DIRICHLET_PARAMETER)
     parser.add_argument("--disallowed_positions", "-dis",
-                        help="A comma separated list of 0 based genome coordinates (relative to the reference Wuhan-Hu-1 genome) where substitutions and deletions are not allowed.", default=DISALLOWED_POSITIONS)
+                        help="A comma separated list of 0 based genome coordinates (relative to the reference genome) where substitutions and deletions are not allowed.", default=DISALLOWED_POSITIONS)
     return parser
 
 
@@ -341,7 +340,8 @@ def load_command_line_args() -> None:
     R_DEL_RATE = float(args.recurrent_deletion_rate)
 
     global DISALLOWED_POSITIONS
-    DISALLOWED_POSITIONS = {int(x) for x in DISALLOWED_POSITIONS.split(",") if len(x) > 0}
+    if len(args.disallowed_positions) != 0:
+        DISALLOWED_POSITIONS = {int(x) for x in args.disallowed_positions.split(",")}
 
     global DEL_LENGTH_GEOMETRIC_PARAMETER
     DEL_LENGTH_GEOMETRIC_PARAMETER = float(args.deletion_length_p)
@@ -402,6 +402,29 @@ def load_command_line_args() -> None:
         exit(1)
     else:
         R_DEL_VAF_DIRICHLET_PARAMETER = [float(a) for a in R_DEL_VAF_DIRICHLET_PARAMETER]
+
+    global VAF_PARAMETER_DICT
+    VAF_PARAMETER_DICT = {
+        "SUBS": SUBS_VAF_DIRICHLET_PARAMETER,
+        "INS": INS_VAF_DIRICHLET_PARAMETER,
+        "DEL": DEL_VAF_DIRICHLET_PARAMETER
+    }
+    global R_VAF_PARAMETER_DICT
+    R_VAF_PARAMETER_DICT = {
+        "SUBS": R_SUBS_VAF_DIRICHLET_PARAMETER,
+        "INS": R_INS_VAF_DIRICHLET_PARAMETER,
+        "DEL": R_DEL_VAF_DIRICHLET_PARAMETER
+    }
+
+    global RATES
+    RATES = {
+        "U_SUBS_RATE": U_SUBS_RATE,
+        "U_INS_RATE": U_INS_RATE,
+        "U_DEL_RATE": U_DEL_RATE,
+        "R_SUBS_RATE": R_SUBS_RATE,
+        "R_INS_RATE": R_INS_RATE,
+        "R_DEL_RATE": R_DEL_RATE
+    }
 
 
 if __name__ == "__main__":
@@ -482,9 +505,8 @@ if __name__ == "__main__":
     # write a summary csv
     df_amplicons[[
         "ref", "amplicon_number", "alt_num_left", "alt_num_right",
-        "total_n_reads", "abundance",
-        "genome_n_reads", "hyperparameter",
-        "amplicon_prob", "n_reads"
+        "total_n_reads", "abundance", "genome_n_reads",
+        "hyperparameter", "amplicon_prob", "n_reads"
     ]].to_csv(join(OUTPUT_FOLDER, f"{OUTPUT_FILENAME_PREFIX}_amplicon_abundances_summary.tsv"), sep="\t")
 
     df_amplicons.reset_index(drop=True, inplace=True)
@@ -500,11 +522,17 @@ if __name__ == "__main__":
         if VERBOSE:
             logging.info(f"Introducing PCR errors")
 
+        PATHS = {
+            "PRIMER_BED": PRIMER_BED,
+            "REFERENCE": REFERENCE,
+            "INDEX_BASE": INDEX_BASE,
+            "AMPLICON_FOLDER": AMPLICONS_FOLDER
+        }
+
         amplicons, n_reads, vcf_errordf = add_PCR_errors(
-            df_amplicons, genome_abundances, PRIMER_BED, REFERENCE, INDEX_BASE, REF_NAME, AMPLICONS_FOLDER,
-            U_SUBS_RATE, U_INS_RATE, U_DEL_RATE, R_SUBS_RATE, R_INS_RATE, R_DEL_RATE, DEL_LENGTH_GEOMETRIC_PARAMETER, INS_MAX_LENGTH,
-            SUBS_VAF_DIRICHLET_PARAMETER, INS_VAF_DIRICHLET_PARAMETER, DEL_VAF_DIRICHLET_PARAMETER,
-            R_SUBS_VAF_DIRICHLET_PARAMETER, R_INS_VAF_DIRICHLET_PARAMETER, R_DEL_VAF_DIRICHLET_PARAMETER, DISALLOWED_POSITIONS
+            df_amplicons, genome_abundances, PATHS, REF_NAME,
+            RATES, DEL_LENGTH_GEOMETRIC_PARAMETER, INS_MAX_LENGTH,
+            VAF_PARAMETER_DICT, R_VAF_PARAMETER_DICT, DISALLOWED_POSITIONS
         )
 
         if amplicons == "No":
