@@ -481,7 +481,7 @@ if __name__ == "__main__":
 
     # write a summary csv
     df_amplicons[[
-        "ref", "amplicon_number", "is_alt_left", "is_alt_right",
+        "ref", "amplicon_number", "alt_num_left", "alt_num_right",
         "total_n_reads", "abundance",
         "genome_n_reads", "hyperparameter",
         "amplicon_prob", "n_reads"
