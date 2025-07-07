@@ -10,9 +10,10 @@ import random
 import shutil
 
 from art_runner import art_illumina
-from create_amplicons import build_index, align_primers, write_amplicon
-from read_model import get_amplicon_reads_sampler
+from create_amplicons import align_primers, write_amplicon
+from read_model import apply_amplicon_reads_sampler
 from PCR_error import add_PCR_errors
+import helpers as hp
 
 
 # All these caps variables are set once (by user inputs, with default values) but then never touched again.
@@ -43,6 +44,7 @@ ART_QSHIFT = 0
 REFERENCE = join(dirname(dirname(abspath(__file__))), "ref", "MN908947.3.fasta")
 REF_NAME = "MN908947.3"
 REF_LEN = 29903
+INDEX_BASE = REFERENCE.strip(".fasta").strip("fa")
 
 U_SUBS_RATE = 0.002485
 U_INS_RATE = 0.00002
@@ -64,31 +66,31 @@ R_INS_VAF_DIRICHLET_PARAMETER = INS_VAF_DIRICHLET_PARAMETER
 R_DEL_VAF_DIRICHLET_PARAMETER = DEL_VAF_DIRICHLET_PARAMETER
 
 
-def setup_parser():
+def setup_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Run SARS-CoV-2 metagenome simulation.")
-    parser.add_argument("--genomes_file", "-g", metavar='',
+    parser.add_argument("--genomes_file", "-g",
                         help="File containing all of the genome lineages to simulate", default=GENOMES_FILE)
-    parser.add_argument("--reference", "-r", metavar='',
+    parser.add_argument("--reference", "-r",
                         help="File containing the reference sequence. Default: ../ref/MN908947.3.fasta", default=REFERENCE)
-    parser.add_argument("--index_base", metavar='',
-                        help="Bowtie2 reference index folder (bt2_index_base). Default: ../ref/MN908947.3", default=REFERENCE.strip(".fasta"))
-    parser.add_argument("--temp_folder", "-t", metavar='',
+    parser.add_argument("--index_base",
+                        help="Bowtie2 reference index folder (bt2_index_base). Default: ../ref/MN908947.3", default=INDEX_BASE)
+    parser.add_argument("--temp_folder", "-t",
                         help="A path for a temporary output folder to store intemediate files. Including FASTA files of genomes, amplicons, and their bowtie2 indices", default=TEMP_FOLDER)
-    parser.add_argument("--genome_abundances", "-ab", metavar='',
+    parser.add_argument("--genome_abundances", "-ab",
                         help="TSV of genome abundances.", default=ABUNDANCES_FILE)
-    parser.add_argument("--primer_set", "-ps", metavar='', help="Primer set. This sets defaults for the parameters, --primers_file, --primer_bed, and --amplicon_distribution_file, which are overwritten if separately provided. Can be either a1 for Artic v1, a4 for Artic v4, a5 for Artic v5.3, and n2 for Nimagen v2, or c for custom (custom provides no defaults, so each of --primers_file, --primer_bed, and --amplicon_distribution_file must be provided separately)",
+    parser.add_argument("--primer_set", "-ps", help="Primer set. This sets defaults for the parameters, --primers_file, --primer_bed, and --amplicon_distribution_file, which are overwritten if separately provided. Can be either a1 for Artic v1, a4 for Artic v4, a5 for Artic v5.3, and n2 for Nimagen v2, or c for custom (custom provides no defaults, so each of --primers_file, --primer_bed, and --amplicon_distribution_file must be provided separately)",
                         required=True, choices=["a1", "a4", "a5", "n2", "c"])
-    parser.add_argument("--primers_file", metavar='',
+    parser.add_argument("--primers_file",
                         help="Fastq file with formatted names of primers - see primer_sets folder for examples. Only needed if using --primer_set=custom.", default=None)
-    parser.add_argument("--primer_bed", metavar='',
+    parser.add_argument("--primer_bed",
                         help="bed formatted file of primers to use, see primer_sets folder for examples. Only needed if using --primer_bed=custom", default=None)
-    parser.add_argument("--amplicon_distribution_file", metavar='',
+    parser.add_argument("--amplicon_distribution_file",
                         help="Tsv file of a prior for amplicon proportions, see primer_sets folder for examples. Only needed if using --primer_bed=custom. ", default=None)
-    parser.add_argument("--output_folder", "-o", metavar='',
+    parser.add_argument("--output_folder", "-o",
                         help="A path for a folder where the output fastq files will be stored. Default is working directory", default=OUTPUT_FOLDER)
-    parser.add_argument("--output_filename_prefix", "-x", metavar='',
+    parser.add_argument("--output_filename_prefix", "-x",
                         help="Name of the fastq files name1.fastq, name2.fastq", default=OUTPUT_FILENAME_PREFIX)
-    parser.add_argument("--seqSys", metavar='', help="Name of the sequencing system, options to use are given by the art_illumina help text, and are:" +
+    parser.add_argument("--seqSys", help="Name of the sequencing system, options to use are given by the art_illumina help text, and are:" +
                         """GA1 - GenomeAnalyzer I (36bp,44bp), GA2 - GenomeAnalyzer II (50bp, 75bp)
            HS10 - HiSeq 1000 (100bp),          HS20 - HiSeq 2000 (100bp),      HS25 - HiSeq 2500 (125bp, 150bp)
            HSXn - HiSeqX PCR free (150bp),     HSXt - HiSeqX TruSeq (150bp),   MinS - MiniSeq TruSeq (50bp)
@@ -98,11 +100,11 @@ def setup_parser():
         "--qprof1", help="Custom quality score profile for R1 reads (ART) - use with --seqSys=custom", default=QPROF1)
     parser.add_argument(
         "--qprof2", help="Custom quality score profile for R1 reads (ART) - use with --seqSys=custom", default=QPROF2)
-    parser.add_argument("--n_reads", "-n", metavar='',
+    parser.add_argument("--n_reads", "-n",
                         help="Approximate number of reads in fastq file (subject to sampling stochasticity).", default=N_READS)
-    parser.add_argument("--read_length", "-l", metavar='',
+    parser.add_argument("--read_length", "-l",
                         help="Length of reads taken from the sequencing machine.", default=READ_LENGTH)
-    parser.add_argument("--seed", "-s", metavar='', help="Random seed", default=SEED)
+    parser.add_argument("--seed", "-s", help="Random seed", default=SEED)
     parser.add_argument("--quiet", "-q", help="Add this flag to supress verbose output.", action='store_true')
     parser.add_argument("--fragment_amplicons", help="Cut amplicons randomly into fragments when running ART for sequencing errors (set as True or False, default is False).",
                         action='store_true', default=FRAGMENT_AMPLICONS)
@@ -111,47 +113,47 @@ def setup_parser():
     parser.add_argument(
         "--fragment_len_sd", help="Standard deviation of fragment lengths if using --fragment_amplicons", default=FRAGMENT_LEN_SD)
     parser.add_argument("--amplicon_distribution", help="Default is DIRICHLET1",
-                        metavar='', default=AMPLICON_DISTRIBUTION)
-    parser.add_argument("--amplicon_pseudocounts", "-c", metavar='', default=AMPLICON_PSEUDOCOUNTS)
+                        default=AMPLICON_DISTRIBUTION)
+    parser.add_argument("--amplicon_pseudocounts", "-c", default=AMPLICON_PSEUDOCOUNTS)
     parser.add_argument("--autoremove", action='store_true', help="Delete temproray files after execution.")
     parser.add_argument("--no_pcr_errors", action='store_true',
                         help="Turn off PCR errors. The output will contain only sequencing errors. Other PCR-error related options will be ignored")
     parser.add_argument(
         "--art_qshift", help="Supply ART with --qShift and --qShift2 parameters (bumps up quality scores).", default=ART_QSHIFT)
-    parser.add_argument("--unique_insertion_rate", "-ins", metavar='',
+    parser.add_argument("--unique_insertion_rate", "-ins",
                         help="PCR insertion error rate. Unique to one source genome in the mixture Default is 0.00002", default=U_INS_RATE)
-    parser.add_argument("--unique_deletion_rate", "-del", metavar='',
+    parser.add_argument("--unique_deletion_rate", "-del",
                         help="PCR deletion error rate. Unique to one source genome in the mixture Default is 0.000115", default=U_DEL_RATE)
-    parser.add_argument("--unique_substitution_rate", "-subs", metavar='',
+    parser.add_argument("--unique_substitution_rate", "-subs",
                         help="PCR substitution error rate. Unique to one source genome in the mixture Default is 0.002485", default=U_SUBS_RATE)
-    parser.add_argument("--recurrent_insertion_rate", "-rins", metavar='',
+    parser.add_argument("--recurrent_insertion_rate", "-rins",
                         help="PCR insertion error rate. Recurs across source genomes. Default is 0.00002", default=R_INS_RATE)
-    parser.add_argument("--recurrent_deletion_rate", "-rdel", metavar='',
+    parser.add_argument("--recurrent_deletion_rate", "-rdel",
                         help="PCR deletion error rate. Recurs across source genomes. Default is 0", default=R_DEL_RATE)
-    parser.add_argument("--recurrent_substitution_rate", "-rsubs", metavar='',
+    parser.add_argument("--recurrent_substitution_rate", "-rsubs",
                         help="PCR substitution error rate. Recurs across source genomes. Default is 0.003357", default=R_SUBS_RATE)
-    parser.add_argument("--deletion_length_p", "-dl", metavar='',
+    parser.add_argument("--deletion_length_p", "-dl",
                         help="Geometric distribution parameter, p, for PCR deletion length. Default is 0.69", default=DEL_LENGTH_GEOMETRIC_PARAMETER)
-    parser.add_argument("--max_insertion_length", "-il", metavar='',
+    parser.add_argument("--max_insertion_length", "-il",
                         help="Maximum PCR insertion length in bases (uniform distribution boundry). Default is 14", default=INS_MAX_LENGTH)
-    parser.add_argument("--subs_VAF_alpha", "-sv", metavar='',
+    parser.add_argument("--subs_VAF_alpha", "-sv",
                         help="alpha1,alpha2 of the Dirichlet distribution for VAF of the unique PCR error. Default is 0.29,1.89", default=SUBS_VAF_DIRICHLET_PARAMETER)
-    parser.add_argument("--del_VAF_alpha", "-dv", metavar='',
+    parser.add_argument("--del_VAF_alpha", "-dv",
                         help="alpha1,alpha2 of the Dirichlet distribution for VAF of the unique PCR error. Default is 0.59,0.41", default=DEL_VAF_DIRICHLET_PARAMETER)
-    parser.add_argument("--ins_VAF_alpha", "-iv", metavar='',
+    parser.add_argument("--ins_VAF_alpha", "-iv",
                         help="alpha1,alpha2 of the Dirichlet distribution for VAF of the unique PCR error. Default is 0.33,0.45", default=INS_VAF_DIRICHLET_PARAMETER)
-    parser.add_argument("--r_subs_VAF_alpha", "-rsv", metavar='',
+    parser.add_argument("--r_subs_VAF_alpha", "-rsv",
                         help="alpha1,alpha2 of the Dirichlet distribution for VAF of the recurrent PCR error. Default is equal to unique erros", default=SUBS_VAF_DIRICHLET_PARAMETER)
-    parser.add_argument("--r_del_VAF_alpha", "-rdv", metavar='',
+    parser.add_argument("--r_del_VAF_alpha", "-rdv",
                         help="alpha1,alpha2 of the Dirichlet distribution for VAF of the recurrent PCR error. Default is equal to unique erros", default=DEL_VAF_DIRICHLET_PARAMETER)
-    parser.add_argument("--r_ins_VAF_alpha", "-riv", metavar='',
+    parser.add_argument("--r_ins_VAF_alpha", "-riv",
                         help="alpha1,alpha2 of the Dirichlet distribution for VAF of the recurrent PCR error. Default is equal to unique erros", default=INS_VAF_DIRICHLET_PARAMETER)
-    parser.add_argument("--disallowed_positions", "-dis", metavar='',
+    parser.add_argument("--disallowed_positions", "-dis",
                         help="A comma separated list of 0 based genome coordinates (relative to the reference Wuhan-Hu-1 genome) where substitutions and deletions are not allowed.", default=DISALLOWED_POSITIONS)
     return parser
 
 
-def load_command_line_args():
+def load_command_line_args() -> None:
     parser = setup_parser()
     args = parser.parse_args()
 
@@ -458,8 +460,8 @@ if __name__ == "__main__":
             logging.info(f"Working on genome {genome_counter} of {n_genomes}")
             logging.info(f"Using bowtie2 to align primers to genome {lineage_reference.description}")
 
-        build_index(genome_path, genome_filename_short, INDICES_FOLDER)
-        df = align_primers(genome_path, genome_filename_short, INDICES_FOLDER, PRIMERS_FILE, VERBOSE)
+        hp.build_index(genome_path, join(INDICES_FOLDER, genome_filename_short))
+        df = align_primers(genome_filename_short, INDICES_FOLDER, PRIMERS_FILE, VERBOSE)
         df["abundance"] = genome_abundances[df["ref"][0]]
 
         # write the amplicon to a file
@@ -468,7 +470,8 @@ if __name__ == "__main__":
         df_amplicons = pd.concat([df_amplicons, df])
 
     # pick total numbers of reads for each amplicon
-    genome_count_sampler, amplicon_hyperparameter_sampler, amplicon_probability_sampler, amplicon_reads_sampler = get_amplicon_reads_sampler(
+    df_amplicons = apply_amplicon_reads_sampler(
+        df_amplicons,
         AMPLICON_DISTRIBUTION,
         AMPLICON_DISTRIBUTION_FILE,
         AMPLICON_PSEUDOCOUNTS,
@@ -476,24 +479,9 @@ if __name__ == "__main__":
         N_READS
     )
 
-    df_amplicons["total_n_reads"] = N_READS
-
-    # for each amplicon, look up what the dirichlet hyperparameter should be (parameter \alpha)
-    df_amplicons["hyperparameter"] = df_amplicons.apply(amplicon_hyperparameter_sampler, axis=1)
-
-    # for each genome, sample a total number of reads that should be shared between all of its amplicons
-    # N_genome = Multinomial(N_reads, p_genomes)
-    df_amplicons["genome_n_reads"] = df_amplicons.apply(genome_count_sampler, axis=1)
-
-    # sample a p_amplicon vector from the dirichlet distribution - p_amplicon = Dir(\alpha)
-    df_amplicons["amplicon_prob"] = df_amplicons.apply(amplicon_probability_sampler, axis=1)
-
-    # sample a number of reads for the amplicons of each genome: Multinomial(N_genome, p_amplicon)
-    df_amplicons["n_reads"] = df_amplicons.apply(amplicon_reads_sampler, axis=1)
-
     # write a summary csv
     df_amplicons[[
-        "ref", "amplicon_number", "is_alt",
+        "ref", "amplicon_number", "is_alt_left", "is_alt_right",
         "total_n_reads", "abundance",
         "genome_n_reads", "hyperparameter",
         "amplicon_prob", "n_reads"

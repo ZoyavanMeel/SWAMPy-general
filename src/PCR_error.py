@@ -8,12 +8,13 @@ from io import StringIO
 import re
 import logging
 
+import helpers as hp
+
 ISSUE_6_BUG_CODE = -1
 
-# Produce an alternative allele for a given error.
 
-
-def alts(ref, type, len=0):
+def alts(ref: str, type: str, len: int = 0) -> str:
+    # Produce an alternative allele for a given error.
     if type == "SUBS":
         nucs = ["A", "C", "G", "T"]
         nucs.remove(ref)
@@ -27,10 +28,9 @@ def alts(ref, type, len=0):
         insert = random.choices(["A", "C", "G", "T"], k=len)
         return ref + "".join(insert)
 
-# find amplicons corresponding to a given position
 
-
-def amplicon_lookup(PRIMER_BED, position, recurrence):
+def amplicon_lookup(PRIMER_BED: str, position: int, recurrence: str) -> list[str]:
+    # Find amplicons corresponding to a given position
 
     df = pd.read_csv(PRIMER_BED, sep="\t", names=["Chr", "Start", "End", "Amplicon", "Pool", "Strand"])
     df["Handedness"] = df.apply(lambda x: x.Amplicon.split("_")[-1], axis=1)
@@ -61,6 +61,7 @@ def add_PCR_errors(
     SUBS_VAF_DIRICHLET_PARAMETER, INS_VAF_DIRICHLET_PARAMETER, DEL_VAF_DIRICHLET_PARAMETER,
     R_SUBS_VAF_DIRICHLET_PARAMETER, R_INS_VAF_DIRICHLET_PARAMETER, R_DEL_VAF_DIRICHLET_PARAMETER, DISALLOWED_POSITIONS
 ):
+    # Z: what is this function even. 300 line monstrosity
 
     REF = SeqIO.read(REFERENCE, format="fasta")
     VAF = dict(SUBS=SUBS_VAF_DIRICHLET_PARAMETER, INS=INS_VAF_DIRICHLET_PARAMETER, DEL=DEL_VAF_DIRICHLET_PARAMETER)
@@ -148,7 +149,7 @@ def add_PCR_errors(
     # Z: build index for reference (SWAMPy originally ships the Wuhan index)
     idx_exts = [".1.bt2", ".2.bt2", ".3.bt2", ".4.bt2", ".rev.1.bt2", ".rev.2.bt2"]
     if not all([os.path.exists(INDEX_BASE+ext) for ext in idx_exts]):
-        subprocess.run(["bowtie2-build", REFERENCE, INDEX_BASE], capture_output=True)
+        hp.build_index(REFERENCE, INDEX_BASE)
 
     for i in df_amplicons.itertuples():
         # Sometimes more than 1 error are introduced to the same amplicon.
@@ -166,8 +167,11 @@ def add_PCR_errors(
             amp = i.amplicon_filepath.replace("&", "\\&").replace("|", "\\|")
 
             # align the original amplicon to the reference because there could be real indels in the source genome.
-            alignment = subprocess.run(["bowtie2", "-x", INDEX_BASE, "-f",
-                                       f"{AMPLICONS_FOLDER}/{amp}"], capture_output=True)
+
+            alignment = subprocess.run(
+                ["bowtie2", "-x", INDEX_BASE, "-f", f"{AMPLICONS_FOLDER}/{amp}"],
+                capture_output=True
+            )
             alignment = StringIO(alignment.stdout.decode("UTF-8"))
 
             # read alignment data as a dataframe
