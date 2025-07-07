@@ -36,27 +36,10 @@ def align_primers(genome_filename_short: str, indices_folder: str, primers_files
 
     # split the column "name" to extract useful data
     df["seq_len"] = df["seq"].apply(len)
-    df["is_alt"] = False
 
-    name_df = df["name"].str.split("_", expand=True)
-    if len(name_df.columns) < 3 or len(name_df.columns) > 4:
-        print(name_df.columns)
-        print(len(name_df.columns))
-        print(name_df.head())
-        err_str = """Primer names don't follow specification.
-Must be: '<prefix>_<amplicon number>_<LEFT|RIGHT>' or '<prefix>_<amplicon number>_<LEFT|RIGHT>_<alternate number>'.
-No underscores or forward slashes allowed in <prefix>."""
-        logging.error(err_str)
-        exit(err_str)
-
-    if len(name_df.columns) == 3:
-        name_df.columns = ["prefix", "amp_num", "handedness"]
-        df["alt_num"] = 1
-    if len(name_df.columns) == 4:
-        name_df.columns = ["prefix", "amp_num", "handedness", "alt_num"]
-        df["alt_num"] = name_df["alt_num"].astype(int)
-
-    df["amplicon_number"] = name_df["amp_num"].astype(int)
+    name_df = hp.process_amplicon_names(df["name"])
+    df["amplicon_number"] = name_df["amp_num"]
+    df["alt_num"] = name_df["alt_num"]
     df["handedness"] = name_df["handedness"]
     del name_df
 

@@ -57,5 +57,27 @@ def bed_2_fastq(genome_file: str, bed_file: str, fastq_file: str) -> None:
             fh.write(primer.format("fastq"))
 
 
+def process_amplicon_names(names: pd.Series) -> pd.DataFrame:
+    name_df = names.str.split("_", expand=True)
+    if len(name_df.columns) < 3 or len(name_df.columns) > 4:
+        print(name_df.columns)
+        print(len(name_df.columns))
+        print(name_df.head())
+        err_str = """Primer names don't follow specification.
+Must be: '<prefix>_<amplicon number>_<LEFT|RIGHT>' or '<prefix>_<amplicon number>_<LEFT|RIGHT>_<alternate number>'.
+No underscores or forward slashes allowed in <prefix>."""
+        logging.error(err_str)
+        exit(err_str)
+
+    if len(name_df.columns) == 3:
+        name_df.columns = ["prefix", "amp_num", "handedness"]
+        name_df["alt_num"] = 1
+    if len(name_df.columns) == 4:
+        name_df.columns = ["prefix", "amp_num", "handedness", "alt_num"]
+        name_df["alt_num"] = name_df["alt_num"].astype(int)
+    name_df["amp_num"] = name_df["amp_num"].astype(int)
+    return name_df
+
+
 if __name__ == "__main__":
     bed_2_fastq("../ref/MN908947.3.fasta", "../primer_sets/artic_v3_all_alt.bed", "../test.fastq")
