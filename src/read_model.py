@@ -86,11 +86,12 @@ def dirichlet_sampler(
 
     amplicon_df = amplicon_df.merge(hyperparams, on=["amplicon_number", "alt_num_left", "alt_num_right"], how="left")
 
+    which = "n_reads" if dist == "DIRICHLET_1" else "amplicon_prob"
+    amplicon_counts = {"ref": [], which: []}
+
     # this for-loop can be vectorized away
-    amplicon_counts = {"ref": [], "amplicon_prob": []}  # , "n_reads": []}
     for ref in sorted(genome_abundances.keys()):
         amplicon_counts["ref"].extend([ref] * hyperparams.shape[0])
-
         if dist == "DIRICHLET_1":  # ... *once* for all genomes...
             amplicon_counts["n_reads"].extend(multinomial(genome_counts[ref], hyperparams["amplicon_prob"]))
         else:  # ... or *separately* for each genome
