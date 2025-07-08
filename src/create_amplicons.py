@@ -85,10 +85,6 @@ def align_primers(genome_filename_short: str, indices_folder: str, primers_files
         df["amplicon_number"].map(str) + "_" + df["alt_num_left"].map(str) + \
         "_" + df["alt_num_right"].map(str) + ".fasta"
 
-    if verbose:
-        logging.info("First 5 rows: ")
-        logging.info(df.head())
-
     return df
 
 
