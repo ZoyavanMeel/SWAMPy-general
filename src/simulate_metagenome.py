@@ -1,5 +1,6 @@
 import argparse
 from os.path import dirname, join, abspath, basename
+from time import perf_counter
 import os
 import glob
 import logging
@@ -427,7 +428,67 @@ def load_command_line_args() -> None:
     }
 
 
+def remove_tmp(GENOMES_FOLDER, AMPLICONS_FOLDER, INDICES_FOLDER):
+    for directory in [GENOMES_FOLDER, AMPLICONS_FOLDER, INDICES_FOLDER]:
+        logging.info(f"Removing all files in {directory}")
+        files = glob.glob(join(directory, "*"))
+        for f in files:
+            os.remove(f)
+
+
+def format_ART_input(lineages_formatted, amplicons, n_reads, AMPLICONS_FOLDER):
+    """Merge art_illumina runs which have the same read count to optimize"""
+    merged_n_reads = list(set(n_reads))
+    if merged_n_reads[0] == 0:
+        merged_n_reads = merged_n_reads[1:]
+
+    merged_amplicons = [join(AMPLICONS_FOLDER, f"merged_amplicon_rcount_{a}.fasta") for a in merged_n_reads]
+
+    # Z: First read the amplicon fasta as a whole to simpify jumping around.
+    #    Order can't(?) be guarantueed due to dropout and such
+    #    Can't be bothered to change much about the original structure either
+    with open(join(AMPLICONS_FOLDER, "all_original_amplicons.fasta"), "w") as af:
+        for lineage in lineages_formatted:
+            with open(join(AMPLICONS_FOLDER, f"all_amplicons_{lineage}.fasta"), "r") as lf:
+                shutil.copyfileobj(lf, af)
+                # These files were all written by SWAMPy, so we know for sure they don't end on a newline
+                af.write("\n")
+
+    #    I don't wanna hear ANYTHING about this thing's efficiency
+    with open(join(AMPLICONS_FOLDER, "all_original_amplicons.fasta"), "r") as af:
+        line_offset = {}
+        offset = 0
+        for line in af:
+            tmp = line.strip().split("_")
+            if len(tmp) < 2:
+                offset += len(line)
+                continue
+            amp_info = tmp[-3:]
+            name = "_".join(tmp[:-3]).replace(" ", "&").replace("/", "&").replace(",", "&")
+            line_offset.update({tuple([name]+amp_info): offset})
+            offset += len(line)
+        af.seek(0)
+
+        for readcount, m_amplicon in zip(merged_n_reads, merged_amplicons):
+            with open(m_amplicon, "w") as merged_handle:
+                for amp in [amplicons[idx] for idx, r in enumerate(n_reads) if r == readcount]:
+                    try:
+                        with open(join(AMPLICONS_FOLDER, amp), "r") as amp_filehandle:
+                            shutil.copyfileobj(amp_filehandle, merged_handle)
+                    except FileNotFoundError as e:
+                        # these are the non-'p' files
+                        tmp = amp.strip(".fasta").split("_")
+                        amp_info = tmp[-3:]
+                        name = ">" + "_".join(tmp[:-3])
+                        af.seek(line_offset[tuple([name]+amp_info)])
+                        # each fasta is two lines: name, sequence
+                        merged_handle.write(af.readline())
+                        merged_handle.write(af.readline())
+    return merged_n_reads, merged_amplicons
+
+
 if __name__ == "__main__":
+    t1 = perf_counter()
 
     # STEP 0: Read command line arguments
     load_command_line_args()
@@ -471,9 +532,11 @@ if __name__ == "__main__":
 
     # STEP 2: Simulate Amplicon Population
     genome_counter = 0
+    lineages_formatted = []
     for genome_path in genome_abundances:
         genome_counter += 1
         genome_path = genome_path.replace(" ", "_").replace("/", "&").replace(",", "&") + ".fasta"
+        lineages_formatted.append(genome_path[:-6])
         genome_path = join(GENOMES_FOLDER, genome_path)
         genome_filename_short = ".".join(basename(genome_path).split(".")[:-1])
         lineage_reference = SeqIO.read(genome_path, format="fasta")
@@ -487,7 +550,7 @@ if __name__ == "__main__":
         df = align_primers(genome_filename_short, INDICES_FOLDER, PRIMERS_FILE, VERBOSE)
         df["abundance"] = genome_abundances[df["ref"][0]]
 
-        # write the amplicon to a file
+        # write the amplicons to a file
         write_amplicon(df, lineage_reference, genome_filename_short, AMPLICONS_FOLDER)
 
         df_amplicons = pd.concat([df_amplicons, df])
@@ -526,7 +589,7 @@ if __name__ == "__main__":
             "PRIMER_BED": PRIMER_BED,
             "REFERENCE": REFERENCE,
             "INDEX_BASE": INDEX_BASE,
-            "AMPLICON_FOLDER": AMPLICONS_FOLDER
+            "AMPLICONS_FOLDER": AMPLICONS_FOLDER
         }
 
         amplicons, n_reads, vcf_errordf = add_PCR_errors(
@@ -557,23 +620,12 @@ if __name__ == "__main__":
                 logging.info(
                     f'All aimed PCR errros are written to "{OUTPUT_FOLDER}/{OUTPUT_FILENAME_PREFIX}_PCR_errors.vcf"')
 
-    amplicons = [join(AMPLICONS_FOLDER, a) for a in amplicons]
-
-    # merge art_illumina runs which have the same read count to optimize
-
-    merged_n_reads = list(set(n_reads))
-    if merged_n_reads[0] == 0:
-        merged_n_reads = merged_n_reads[1:]
-
-    merged_amplicons = [join(AMPLICONS_FOLDER, f"merged_amplicon_rcount_{a}.fasta") for a in merged_n_reads]
-
-    for readcount, m_amplicon in zip(merged_n_reads, merged_amplicons):
-        with open(m_amplicon, "w") as merged:
-            for amp in [amplicons[idx] for idx, r in enumerate(n_reads) if r == readcount]:
-                with open(amp, "r") as amp_file:
-                    shutil.copyfileobj(amp_file, merged)
-
     # STEP 4: Simulate Reads
+    n_reads, amplicons = format_ART_input(lineages_formatted, amplicons, n_reads, AMPLICONS_FOLDER)
+
+    t2 = perf_counter() - t1
+    print("Time (pre-ART):", t2)
+
     logging.info("Generating reads using art_illumina, cycling through all genomes and remaining amplicons.")
     with art_illumina(
         OUTPUT_FOLDER, OUTPUT_FILENAME_PREFIX,
@@ -581,19 +633,8 @@ if __name__ == "__main__":
         VERBOSE, TEMP_FOLDER, N_READS, FRAGMENT_AMPLICONS,
         FRAGMENT_LEN_MEAN, FRAGMENT_LEN_SD, ART_QSHIFT
     ) as art:
-        art.run(merged_amplicons, merged_n_reads)
+        art.run(amplicons, n_reads)
 
     # STEP 5: Clean up all of the temp. directories
-    for directory in [GENOMES_FOLDER, AMPLICONS_FOLDER, INDICES_FOLDER]:
-        logging.info(f"Removing all files in {directory}")
-        i = "y"
-
-        if not AUTOREMOVE:
-            logging.info(f"Press y and enter if you are ok with all files in the directory {directory}" +
-                         " being deleted (use flag --autoremove to stop showing this message).")
-            i = input()
-
-        if i.lower() == "y":
-            files = glob.glob(join(directory, "*"))
-            for f in files:
-                os.remove(f)
+    if AUTOREMOVE:
+        remove_tmp(GENOMES_FOLDER, AMPLICONS_FOLDER, INDICES_FOLDER)

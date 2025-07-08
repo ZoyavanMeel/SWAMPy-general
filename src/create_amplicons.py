@@ -11,12 +11,6 @@ import helpers as hp
 
 def align_primers(genome_filename_short: str, indices_folder: str, primers_files: str, verbose: bool = False):
 
-    # run bowtie2 aligner
-    # alignment = subprocess.run(
-    #     ["bowtie2", "-x", join(indices_folder, genome_filename_short), "-U", primers_files],
-    #     capture_output=True
-    # )
-
     sp = subprocess.run(
         ["bowtie2", "-x", join(indices_folder, genome_filename_short), "-U", primers_files],
         stdout=subprocess.PIPE, stderr=subprocess.PIPE
@@ -90,22 +84,21 @@ def align_primers(genome_filename_short: str, indices_folder: str, primers_files
 
 def write_amplicon(df: pd.DataFrame, reference: SeqRecord, genome_filename_short: str, amplicons_folder: str, verbose: bool = False):
 
+    fasta_entries = []
+    reference_string = str(reference.seq)
     for _, row in df.iterrows():
         amplicon_number = row["amplicon_number"]
         lalt, ralt = row["alt_num_left"], row["alt_num_right"]
-        reference_string = str(reference.seq)
+
         amplicon = reference_string[row["left"] - 1: row["right"] + row["right_primer_length"] - 1]
 
-        if verbose:
-            logging.info(f">{reference.id}_amplicon_{amplicon_number}_{lalt}_{ralt}")
-            logging.info("length: " + str(row.right - row.left))
-            logging.info(amplicon + "\n")
-            logging.info(row["left_primer"] + "-" * (row["right"] - row["left"] -
-                         row["left_primer_length"]) + row["right_primer"] + "\n")
+        header = f">{reference.id}_amplicon_{amplicon_number}_{lalt}_{ralt}"
+        fasta_entry = f"{header}\n{amplicon}"
+        fasta_entries.append(fasta_entry)
 
-        with open(f"{amplicons_folder}/{genome_filename_short}_amplicon_{amplicon_number}_{lalt}_{ralt}.fasta", "w") as f:
-            f.write(f">{reference.id}_amplicon_{amplicon_number}_{lalt}_{ralt}\n")
-            f.write(amplicon + "\n\n")
+    # Z: write all at once to a *single* FASTA file
+    with open(join(amplicons_folder, f"all_amplicons_{genome_filename_short}.fasta"), "w") as f:
+        f.write("\n".join(fasta_entries))
 
 
 if __name__ == "__main__":

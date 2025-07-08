@@ -1,4 +1,3 @@
-from time import perf_counter
 import os
 from functools import partial
 import numpy as np
@@ -11,6 +10,9 @@ import re
 import logging
 
 import helpers as hp
+
+# pd.set_option('display.max_columns', None)
+# pd.set_option('display.max_rows', None)
 
 ISSUE_6_BUG_CODE = -1
 
@@ -80,23 +82,19 @@ def no_del_in_disallowed(errors: pd.DataFrame, disallowed: np.ndarray) -> pd.Dat
     return errors_clean.drop(columns=["start", "end", "overlaps"])
 
 
-def assign_errors_to_genomes(errors: pd.DataFrame, genome_abundances: dict[str, float]) -> pd.DataFrame:
-    return errors.apply(
-        lambda x: random.choices(
-            population=list(genome_abundances.keys()),
-            weights=list(genome_abundances.values()),
-            k=1
-        ) if not x["recurrent"] else list(genome_abundances.keys()), axis=1
-    )
-
-
-def get_sequence_params(row: pd.Series, REFSEQ, VAF_DICT, R_VAF_DICT) -> pd.Series:
+def get_sequence_params(row: pd.Series, REFSEQ, VAF_DICT: dict, R_VAF_DICT: dict, genome_abundances: dict) -> pd.Series:
     ref = REFSEQ.seq[row["pos"]] if row["errortype"] != "DEL" else REFSEQ.seq[row["pos"]-1:row["pos"]+row["length"]]
     alt = alts(ref, row["errortype"], row["length"])
-    vaf = np.random.dirichlet(VAF_DICT[row["errortype"]], size=None)[0] \
-        if not row["recurrent"] \
-        else np.random.dirichlet(R_VAF_DICT[row["errortype"]], size=None)[0]
-    return pd.Series([ref, alt, vaf])
+
+    if not row["recurrent"]:
+        vaf = np.random.dirichlet(VAF_DICT[row["errortype"]], size=None)[0]
+        genome = random.choices(
+            population=list(genome_abundances.keys()),
+            weights=list(genome_abundances.values()), k=1)
+    else:
+        vaf = np.random.dirichlet(R_VAF_DICT[row["errortype"]], size=None)[0]
+        genome = list(genome_abundances.keys())
+    return pd.Series([genome, ref, alt, vaf])
 
 
 def add_PCR_errors(
@@ -106,8 +104,6 @@ def add_PCR_errors(
     VAF_DICT: dict[str, float], R_VAF_DICT: dict[str, float],
     DISALLOWED_POSITIONS: set[int]
 ):
-    # Z: what is this function even. 300 line monstrosity
-
     REF = SeqIO.read(PATHS["REFERENCE"], format="fasta")
 
     U_SUBS_COUNT = int(np.random.poisson(RATES["U_SUBS_RATE"]*len(REF.seq), 1))  # unique
@@ -124,39 +120,12 @@ def add_PCR_errors(
         return "No", "PCR", "ERROR"
 
     # create a dataframe of errors that we want to introduce
-    errors = pd.DataFrame(dict(errortype=["SUBS"]*SUBS_COUNT + ["DEL"]*DEL_COUNT + ["INS"]*INS_COUNT))
-
-    # Z: recurrent = True; unique = False
-    errors["recurrent"] = [True]*R_SUBS_COUNT + [False]*U_SUBS_COUNT + [True]*R_DEL_COUNT + \
-        [False]*U_DEL_COUNT + [True]*R_INS_COUNT + [False]*U_INS_COUNT
-
-    # Z: encapsulate error-to-genome assignment
-    errors["genome"] = assign_errors_to_genomes(errors, genome_abundances)
-
-    errors["mut_indices"] = errors.index
-    errors["length"] = [1]*SUBS_COUNT +\
-        list(np.random.geometric(p=DEL_LENGTH_GEOMETRIC_PARAMETER, size=DEL_COUNT)) +\
-        random.choices(population=list(range(1, INS_MAX_LENGTH+1)), k=INS_COUNT)
-
-    errors["pos"] = random.sample(population=list(range(len(REF.seq))), k=SUBS_COUNT+INS_COUNT+DEL_COUNT)
-
-    # Z: loop over all rows only once instead of 3 times
-    get_sequence_params_p = partial(get_sequence_params, REFSEQ=REF, VAF_DICT=VAF_DICT, R_VAF_DICT=R_VAF_DICT)
-    errors[["ref", "alt", "VAF"]] = errors.apply(get_sequence_params_p, axis=1)
-
-    # Z: don't read the BED-file on each interation, just load it once
-    primer_df = read_primer_bed_for_lookup(PATHS["PRIMER_BED"])
-    errors["amplicons"] = errors.apply(lambda x: amplicon_lookup(primer_df, x["pos"], x["recurrent"]), axis=1)
-    errors = errors.loc[errors['VAF'] != 0]
-
-    # don't allow substitutions in the disallowed positions
-    errors.at[0, "errortype"] = "DEL"
-    errors = errors[~(errors["errortype"] == "SUBS") | ~(errors["pos"].isin(DISALLOWED_POSITIONS))]
-
-    # don't allow deletions of the disallowed positions
-    # Z: added functionality
-    if len(DISALLOWED_POSITIONS) > 0:
-        errors = no_del_in_disallowed(errors, np.array(list(DISALLOWED_POSITIONS)))
+    errors = build_error_df(
+        genome_abundances, PATHS, DEL_LENGTH_GEOMETRIC_PARAMETER,
+        INS_MAX_LENGTH, VAF_DICT, R_VAF_DICT, DISALLOWED_POSITIONS,
+        REF, U_SUBS_COUNT, U_INS_COUNT, U_DEL_COUNT, R_SUBS_COUNT,
+        R_INS_COUNT, R_DEL_COUNT, SUBS_COUNT, INS_COUNT, DEL_COUNT
+    )
 
     # all amplicons to be mutated
     error_amplicons = [item for sublist in errors["amplicons"] for item in sublist]
@@ -173,15 +142,26 @@ def add_PCR_errors(
     if not all([os.path.exists(PATHS["INDEX_BASE"]+ext) for ext in idx_exts]):
         hp.build_index(PATHS["REFERENCE"], PATHS["INDEX_BASE"])
 
+    # align the original amplicon to the reference because there could be real indels in the source genome.
+    align_dfs = {
+        lineage: align_amps_to_ref(PATHS, f"all_amplicons_{lineage}.fasta")
+        for lineage in genome_abundances.keys()
+    }
+
+    def amplicon_alignment(row) -> pd.Series:
+        """Simple getter for the align_dfs so that I don't have to change too much of the original structure"""
+        df = align_dfs[row["ref"]]
+        return df[df["amplicon_number"] == str(row["amplicon_number"])].reset_index(drop=True)
+
     for _, row in df_amplicons.iterrows():
         # Sometimes more than 1 error are introduced to the same amplicon.
         # Find all errors that will be introduced to that amplicon
-
-        # TODO: see how this interacts with alternates
+        # Z: this is *fine* with alternate amplicons, because they will overlap nearly the exact same region
+        #    we check later what the alts are doing
         mut_indices = [
             indices[idx]
             for idx, a in enumerate(error_amplicons)
-            if a == str(row["amplicon_number"]) and row["ref"] in errors.loc[indices[idx], "genome"]
+            if a == row["amplicon_number"] and row["ref"] in errors.loc[indices[idx], "genome"]
         ]
 
         if len(mut_indices) == 0:
@@ -189,28 +169,23 @@ def add_PCR_errors(
             n_reads.append(row["n_reads"])
             continue
 
-        # | and & are problematic for bash (subprocess), escape those.
-        amp = row["amplicon_filepath"].replace("&", "\\&").replace("|", "\\|")
-
-        # align the original amplicon to the reference because there could be real indels in the source genome.
-        align_df = align_amp_to_ref(PATHS, amp)
-
         # if the amplicon contains too many Ns it will not align, skip introducing PCR error to those
-        if align_df["CIGAR"][0] == "*":
+        alignment = amplicon_alignment(row)
+        if alignment["CIGAR"][0] == "*":
             amplicons.append(row["amplicon_filepath"])
             n_reads.append(row["n_reads"])
         else:
             # Record the CIGAR as a long string. i.e. "MMMII" instead of "3M2I"
             CIGAR = ""
-            for idx, cigar in enumerate(re.split("(M|D|I)", align_df.CIGAR[0])[:-1]):
+            for idx, cigar in enumerate(re.split("(M|D|I)", alignment["CIGAR"][0])[:-1]):
                 if idx % 2 == 0:
                     prev = cigar[:]
                 else:
                     CIGAR += cigar*int(prev)
 
             # Start position and the sequence of the alignment(amplicon)
-            start_p = align_df.start[0]-1
-            seq = align_df.seq[0]
+            start_p = alignment["start"][0]-1
+            seq = alignment["seq"][0]
 
             # Create an empty dataframe to hold how many reads each error combination will produce at the end.
             reads_df = pd.DataFrame()
@@ -354,25 +329,74 @@ def add_PCR_errors(
     errors['info'] = errors.apply(lambda x: "VAF=%.5f" % round(x.VAF, 5) + f";REC={r_or_u(x)}", axis=1)
     errors.sort_values("pos", inplace=True)
     vcf_errordf = errors.loc[:, ["chr", "pos_1", "id", "ref", "alt", "qual", "filter", "info"]]
-
     return amplicons, n_reads, vcf_errordf
 
 
-def align_amp_to_ref(PATHS, amp):
+def build_error_df(
+    genome_abundances: dict, PATHS: dict, DEL_LENGTH_GEOMETRIC_PARAMETER: float,
+    INS_MAX_LENGTH: int, VAF_DICT: dict, R_VAF_DICT: dict, DISALLOWED_POSITIONS: set[int],
+    REF, U_SUBS_COUNT, U_INS_COUNT, U_DEL_COUNT, R_SUBS_COUNT, R_INS_COUNT, R_DEL_COUNT,
+    SUBS_COUNT, INS_COUNT, DEL_COUNT
+):
+    errors = pd.DataFrame(dict(errortype=["SUBS"]*SUBS_COUNT + ["DEL"]*DEL_COUNT + ["INS"]*INS_COUNT))
+
+    # Z: recurrent = True; unique = False
+    errors["recurrent"] = [True]*R_SUBS_COUNT + [False]*U_SUBS_COUNT + [True]*R_DEL_COUNT + \
+        [False]*U_DEL_COUNT + [True]*R_INS_COUNT + [False]*U_INS_COUNT
+
+    errors["mut_indices"] = errors.index
+    errors["length"] = [1]*SUBS_COUNT +\
+        list(np.random.geometric(p=DEL_LENGTH_GEOMETRIC_PARAMETER, size=DEL_COUNT)) +\
+        random.choices(population=list(range(1, INS_MAX_LENGTH+1)), k=INS_COUNT)
+
+    errors["pos"] = random.sample(population=list(range(len(REF.seq))), k=SUBS_COUNT+INS_COUNT+DEL_COUNT)
+
+    # don't allow substitutions in the disallowed positions
+    errors.at[0, "errortype"] = "DEL"
+    errors = errors[~(errors["errortype"] == "SUBS") | ~(errors["pos"].isin(DISALLOWED_POSITIONS))]
+
+    # don't allow deletions of the disallowed positions
+    # Z: added functionality
+    if len(DISALLOWED_POSITIONS) > 0:
+        errors = no_del_in_disallowed(errors, np.array(list(DISALLOWED_POSITIONS)))
+
+    # Z: loop over all rows only once instead of 4 times
+    get_sequence_params_p = partial(get_sequence_params, REFSEQ=REF, VAF_DICT=VAF_DICT,
+                                    R_VAF_DICT=R_VAF_DICT, genome_abundances=genome_abundances)
+    errors[["genome", "ref", "alt", "VAF"]] = errors.apply(get_sequence_params_p, axis=1)
+    errors = errors.loc[errors['VAF'] != 0]
+
+    # Z: don't read the BED-file on each interation, just load it once
+    # Kept out of `get_sequence_params` for readability
+    primer_df = read_primer_bed_for_lookup(PATHS["PRIMER_BED"])
+    errors["amplicons"] = errors.apply(lambda x: amplicon_lookup(primer_df, x["pos"], x["recurrent"]), axis=1)
+    return errors
+
+
+def align_amps_to_ref(PATHS, amp_path: str):
+    amp_path = re.sub(r"[/,\|&]", r"\\&", amp_path).replace(" ", "_")
     alignment = subprocess.run(
-        ["bowtie2", "-x", PATHS['INDEX_BASE'], "-f", f"{PATHS['AMPLICONS_FOLDER']}/{amp}"],
-        capture_output=True
+        ["bowtie2", "-x", PATHS['INDEX_BASE'], "-f", f"{PATHS['AMPLICONS_FOLDER']}/{amp_path}"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE
     )
-    alignment = StringIO(alignment.stdout.decode("UTF-8"))
+    out, err = alignment.stdout.decode(), alignment.stderr.decode()
+    if "(err)" in err.lower() or "error" in err.lower():
+        err_str = f"Bowtie2 error: {err}"
+        logging.error(err_str)
+        exit(err_str)
+
+    alignment = StringIO(out)
 
     # read alignment data as a dataframe
     align_df = pd.read_csv(
-        alignment, sep="\t",
-        skiprows=[0, 1, 2], header=None,
-        names=[i for i in range(10)],
-        usecols=[i for i in range(10)]
+        alignment, sep="\t", skiprows=[0, 1, 2], header=None,
+        names=[i for i in range(10)], usecols=[i for i in range(10)]
     )
-    print(align_df.head())
-    quit()
+
     align_df = align_df[[0, 3, 5, 9]].rename(columns={0: "name", 3: "start", 5: "CIGAR", 9: "seq"})
-    return align_df
+
+    name_df = align_df["name"].str.split("_", expand=True)
+    name_df = name_df[name_df.columns[-3:]]
+    name_df.columns = ["amplicon_number", "alt_num_left", "alt_num_right"]
+    return align_df.merge(name_df, left_index=True, right_index=True)
