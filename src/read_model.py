@@ -1,5 +1,4 @@
 from numpy.random import dirichlet, binomial, multinomial
-import numpy as np
 import pandas as pd
 import logging
 
