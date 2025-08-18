@@ -9,7 +9,7 @@ from Bio.SeqIO.FastaIO import SeqRecord
 
 def build_index(genome_path: str, index_base: str, mkdir: bool = False):
     """
-    Function to build a Bowtie2 index base.
+    Function to build a BWA index base.
     - `genome_path`: Filepath to reference FASTA to make the index of.
     - `index_base`: Location+prefix for the index base.
     - `mkdir`: Whether to make the output folder for the index base if it does not yet exist.
@@ -21,16 +21,22 @@ def build_index(genome_path: str, index_base: str, mkdir: bool = False):
         subprocess.run(["mkdir", "-p", idx_dir])
 
     sp = subprocess.run(
-        ["bowtie2-build", genome_path, index_base],
+        ["bwa", "index", "-p", index_base, genome_path],
+        # ["bowtie2-build", genome_path, index_base],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.PIPE
     )
     err = sp.stderr.decode()
-    # Bowtie2 stderr is just what they for everything
-    if "(err)" in err.lower() or "error" in err.lower():
-        err_str = f"Bowtie2 error: {err}"
-        logging.error(err_str)
-        exit(err_str)
+    for e in ["[e::", "error", "err", "fail"]:
+        if e in err.lower():
+            err_str = f"BWA error: {err}"
+            logging.error(err_str)
+            exit(err_str)
+    # # Bowtie2 stderr is just what they for everything
+    # if "(err)" in err.lower() or "error" in err.lower():
+    #     err_str = f"Bowtie2 error: {err}"
+    #     logging.error(err_str)
+    #     exit(err_str)
 
 
 def bed_2_fastq(genome_file: str, bed_file: str, fastq_file: str) -> None:
@@ -77,6 +83,25 @@ No underscores or forward slashes allowed in <prefix>."""
         name_df["alt_num"] = name_df["alt_num"].astype(int)
     name_df["amp_num"] = name_df["amp_num"].astype(int)
     return name_df
+
+
+def read_primer_bed(path: str) -> pd.DataFrame:
+    df = pd.read_csv(path, sep="\t", index_col=False, header=None)
+    df = df[[i for i in range(6)]]
+    df.columns = ["Chr", "Start", "End", "Amplicon", "Pool", "Strand"]
+    name_df = process_amplicon_names(df["Amplicon"])
+    df["handedness"] = name_df["handedness"]
+    df["amplicon_number"] = name_df["amp_num"]
+    df["alt_num"] = name_df["alt_num"]
+    df.drop(["Chr", "Amplicon", "Pool", "Strand"], inplace=True, axis=1)
+    del name_df
+
+    return pd.merge(
+        df.loc[df["handedness"] == "LEFT"],
+        df.loc[df["handedness"] == "RIGHT"],
+        on=["amplicon_number"],
+        suffixes=("_left", "_right")
+    )
 
 
 if __name__ == "__main__":
