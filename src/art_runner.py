@@ -12,19 +12,20 @@ import logging
 class ArtIllumina:
 
     def __init__(
-            self,
-            outpath,
-            output_filename_prefix,
-            read_length,
-            seq_sys,
-            qprof1,
-            qprof2,
-            verbose, temp,
-            nreads,
-            fragment_amplicons,
-            fragment_len_mean,
-            fragment_len_sd,
-            qshift):
+        self,
+        outpath,
+        output_filename_prefix,
+        read_length,
+        seq_sys,
+        qprof1,
+        qprof2,
+        verbose, temp,
+        nreads,
+        fragment_amplicons,
+        fragment_len_mean,
+        fragment_len_sd,
+        qshift
+    ):
 
         self.outpath = outpath
         self.output_filename_prefix = output_filename_prefix
@@ -41,9 +42,8 @@ class ArtIllumina:
         self.qshift = qshift
 
     def run_once(self, infile, n_reads, out_prefix, rnd_seed):
-        art_options = [
-            "art_illumina",
-        ]
+        art_options = ["art_illumina"]
+
         if self.fragment_amplicons:
             art_options += ["--mflen", str(self.fragment_len_mean), "--sdev", str(self.fragment_len_sd)]
         else:
@@ -86,18 +86,14 @@ class ArtIllumina:
         if warning != "Warning: your simulation will not output any ALN or SAM file with your parameter settings!\n":
             logging.warning(warning)
 
-    def run(self, amplicons, n_reads):
-
+    def run(self, amplicons, n_reads, rng: np.random.Generator):
         params = zip(amplicons, n_reads)
-
         for a, n in params:
-
             short_name = ".".join(basename(a).split(".")[:-1])
-
             if self.verbose:
                 logging.info(f"Starting on file {short_name}.fasta with {n} reads")
 
-            self.run_once(a, n, join(self.temp, "tmp.sms.")+short_name+".", np.random.randint(2 ** 63))
+            self.run_once(a, n, join(self.temp, "tmp.sms.")+short_name+".", rng.integers(2 ** 63))
 
         all_r1_files = sorted([x for x in glob.glob(join(self.temp, "tmp.sms.*")) if x[-4:] == "1.fq"])
         all_r2_files = sorted([x for x in glob.glob(join(self.temp, "tmp.sms.*")) if x[-4:] == "2.fq"])
@@ -115,7 +111,7 @@ class ArtIllumina:
         logging.info("Creating random data for shuffle.")
         with open(join(self.temp, "tmp.sms.random_data"), "w") as random_data:
             ALPHABET = np.array(list(string.ascii_lowercase))
-            random_data.write("".join(np.random.choice(ALPHABET, size=max(5000000, int(2.5*self.nreads)))))
+            random_data.write("".join(rng.choice(ALPHABET, size=max(5000000, int(2.5*self.nreads)))))
 
         # shuffle the fastq's so that the reads are in a random order.
         shuffle_fastq_file(join(self.temp, "tmp.sms.all_files_unshuffled1.fastq"), join(
