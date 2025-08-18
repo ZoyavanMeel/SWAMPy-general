@@ -12,19 +12,26 @@ import helpers as hp
 def align_primers(genome_filename_short: str, indices_folder: str, primers_files: str, verbose: bool = False):
 
     sp = subprocess.run(
-        ["bowtie2", "-x", join(indices_folder, genome_filename_short), "-U", primers_files],
+        ["bwa", "mem", "-k", "5", "-L", "1000", "-T", "16", join(indices_folder, genome_filename_short), primers_files],
+        # ["bowtie2", "-x", join(indices_folder, genome_filename_short), "-U", primers_files],
         stdout=subprocess.PIPE, stderr=subprocess.PIPE
     )
-    err = sp.stderr.decode()
-    if "(err)" in err.lower() or "error" in err.lower():
-        err_str = f"Bowtie2 error: {err}"
-        logging.error(err_str)
-        exit(err_str)
 
-    alignment = StringIO(sp.stdout.decode("UTF-8"))
+    err = sp.stderr.decode()
+    for e in ["[e::", "error", "err", "fail"]:
+        if e in err.lower():
+            err_str = f"BWA error: {err}"
+            logging.error(err_str)
+            exit(err_str)
+    # if "(err)" in err.lower() or "error" in err.lower():
+    #     err_str = f"Bowtie2 error: {err}"
+    #     logging.error(err_str)
+    #     exit(err_str)
+
+    alignment = StringIO(sp.stdout.decode())
 
     # read alignment data as a dataframe
-    df = pd.read_csv(alignment, sep="\t", skiprows=[0, 1, 2], header=None, names=[i for i in range(19)])
+    df = pd.read_csv(alignment, sep="\t", skiprows=[0, 1], header=None, names=[i for i in range(19)])
     df = pd.DataFrame(df[[0, 2, 3, 9]])
     df = df.rename(columns={0: "name", 2: "ref", 3: "start", 9: "seq"})
 
@@ -42,7 +49,7 @@ def align_primers(genome_filename_short: str, indices_folder: str, primers_files
     for r in df.itertuples():
         if r.ref == "*":
             if verbose:
-                logging.info(f"Dropping amplicon {r.amplicon_number}, couldn't find a match for the primer {r.seq}")
+                logging.info(f"Dropping amplicon {r.amplicon_number}, couldn't find a match for the primer {r.name}")
             drop_rows.append(r.Index)
 
     df.drop(drop_rows, inplace=True)
@@ -74,11 +81,10 @@ def align_primers(genome_filename_short: str, indices_folder: str, primers_files
     })
 
     # ampNum_altNumLeft_altNumRight
-    # Z: filepaths are now: /genome_amplicon_\d+_\d+_\d+\.fasta/
-    df["amplicon_filepath"] = genome_filename_short + "_amplicon_" + \
-        df["amplicon_number"].map(str) + "_" + df["alt_num_left"].map(str) + \
-        "_" + df["alt_num_right"].map(str) + ".fasta"
-
+    # Z: filepaths are now: /genome_amplicon_\d+_\d+_\d+\.fasta
+    df["amplicon_filepath"] = genome_filename_short + "_amplicon_" + df["amplicon_number"].astype(str)
+    df["amplicon_filepath"] += "_" + df["alt_num_left"].astype(str)
+    df["amplicon_filepath"] += "_" + df["alt_num_right"].astype(str) + ".fasta"
     return df
 
 
@@ -107,7 +113,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Create amplicons for a genome using a primer set.")
     parser.add_argument("--genome_path", "-g", help="Path to the genome of interest.")
     parser.add_argument("--amplicons_folder", "-am", help="Folder where the output amplicons will go.")
-    parser.add_argument("--indices_folder", "-i", help="Folder where bowtie2 indices are created and stored.")
+    parser.add_argument("--indices_folder", "-i", help="Folder where BWA indices are created and stored.")
     parser.add_argument("--primers_file", "-p", help="Path to fastq file of primers. Default ARTIC V1 primers.")
     parser.add_argument("--verbose", help="Verbose mode.")
 
