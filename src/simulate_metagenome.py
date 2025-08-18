@@ -31,15 +31,13 @@ READ_LENGTH = 250
 SEQ_SYS = "MSv3"
 QPROF1 = None
 QPROF2 = None
-SEED = np.random.randint(1000000000)
-AMPLICON_DISTRIBUTION = "DIRICHLET_1"
-AMPLICON_PSEUDOCOUNTS = 200
+SEED = np.random.SeedSequence()
+RNG = np.random.default_rng(SEED)
 DISALLOWED_POSITIONS = {}
 FRAGMENT_AMPLICONS = False
 FRAGMENT_LEN_MEAN = 0
 FRAGMENT_LEN_SD = 0
 ART_QSHIFT = 0
-
 
 # PCR-error related variables:
 REFERENCE = join(dirname(dirname(abspath(__file__))), "ref", "MN908947.3.fasta")
@@ -65,6 +63,11 @@ R_SUBS_VAF_DIRICHLET_PARAMETER = SUBS_VAF_DIRICHLET_PARAMETER
 R_INS_VAF_DIRICHLET_PARAMETER = INS_VAF_DIRICHLET_PARAMETER
 R_DEL_VAF_DIRICHLET_PARAMETER = DEL_VAF_DIRICHLET_PARAMETER
 
+SNV_BALANCE = 0.5
+SNV_DIRICHLET_PARAMETER = 200
+AMPLICON_DISTRIBUTION = "DIRICHLET_1"
+AMPLICON_DIRICHLET_PARAMETER = 200
+
 
 def setup_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Run SARS-CoV-2 metagenome simulation.")
@@ -73,19 +76,21 @@ def setup_parser() -> argparse.ArgumentParser:
     parser.add_argument("--reference", "-r",
                         help="File containing the reference sequence. Default: ../ref/MN908947.3.fasta", default=REFERENCE)
     parser.add_argument("--index_base",
-                        help="Bowtie2 reference index folder (bt2_index_base). Default: ../ref/MN908947.3", default=INDEX_BASE)
+                        help="BWA reference index folder (bwa_index_base). Default: ../ref/MN908947.3", default=INDEX_BASE)
     parser.add_argument("--temp_folder", "-t",
-                        help="A path for a temporary output folder to store intemediate files. Including FASTA files of genomes, amplicons, and their bowtie2 indices", default=TEMP_FOLDER)
-    parser.add_argument("--genome_abundances", "-ab",
+                        help="A path for a temporary output folder to store intemediate files. Including FASTA files of genomes, amplicons, and their BWA indices", default=TEMP_FOLDER)
+    parser.add_argument("--genome_abundances", "-a",
                         help="TSV of genome abundances.", default=ABUNDANCES_FILE)
-    parser.add_argument("--primer_set", "-ps", help="Primer set. This sets defaults for the parameters, --primers_file, --primer_bed, and --amplicon_distribution_file, which are overwritten if separately provided. Can be either a1 for Artic v1, a4 for Artic v4, a5 for Artic v5.3, and n2 for Nimagen v2, or c for custom (custom provides no defaults, so each of --primers_file, --primer_bed, and --amplicon_distribution_file must be provided separately)",
+    parser.add_argument("--primer_set", help="Primer set. This sets defaults for the parameters, --primers_file, --primer_bed, and --amplicon_distribution_file, which are overwritten if separately provided. Can be either a1 for Artic v1, a4 for Artic v4, a5 for Artic v5.3, and n2 for Nimagen v2, or c for custom (custom provides no defaults, so each of --primers_file, --primer_bed, and --amplicon_distribution_file must be provided separately)",
                         required=True, choices=["a1", "a4", "a5", "n2", "c"])
+    parser.add_argument("--snv_balance", "-b", help="Indicates the balance between the given amplicon distribution and the calculated SNV-bias. Default: 0.5 (50/50). Max/min = 1.0/0.0. Increasing this parameter increases the weight of the SNV-bias",
+                        default=SNV_BALANCE)
     parser.add_argument("--primers_file",
                         help="Fastq file with formatted names of primers - see primer_sets folder for examples. Only needed if using --primer_set=custom.", default=None)
     parser.add_argument("--primer_bed",
                         help="bed formatted file of primers to use, see primer_sets folder for examples. Only needed if using --primer_bed=custom", default=None)
     parser.add_argument("--amplicon_distribution_file",
-                        help="Tsv file of a prior for amplicon proportions, see primer_sets folder for examples. Only needed if using --primer_bed=custom. ", default=None)
+                        help="TSV file of a prior for amplicon proportions, see primer_sets folder for examples. Set only if using --primer_bed=custom. When unset: assume equal distribution between amplicons.", default=None)
     parser.add_argument("--output_folder", "-o",
                         help="A path for a folder where the output fastq files will be stored. Default is working directory", default=OUTPUT_FOLDER)
     parser.add_argument("--output_filename_prefix", "-x",
@@ -104,7 +109,7 @@ def setup_parser() -> argparse.ArgumentParser:
                         help="Approximate number of reads in fastq file (subject to sampling stochasticity).", default=N_READS)
     parser.add_argument("--read_length", "-l",
                         help="Length of reads taken from the sequencing machine.", default=READ_LENGTH)
-    parser.add_argument("--seed", "-s", help="Random seed", default=SEED)
+    parser.add_argument("--seed", "-s", help="Random seed integer (must be non-negative)")
     parser.add_argument("--quiet", "-q", help="Add this flag to supress verbose output.", action='store_true')
     parser.add_argument("--fragment_amplicons", help="Cut amplicons randomly into fragments when running ART for sequencing errors (set as True or False, default is False).",
                         action='store_true', default=FRAGMENT_AMPLICONS)
@@ -114,7 +119,8 @@ def setup_parser() -> argparse.ArgumentParser:
         "--fragment_len_sd", help="Standard deviation of fragment lengths if using --fragment_amplicons", default=FRAGMENT_LEN_SD)
     parser.add_argument("--amplicon_distribution", help="Default is DIRICHLET1",
                         default=AMPLICON_DISTRIBUTION)
-    parser.add_argument("--amplicon_pseudocounts", "-c", default=AMPLICON_PSEUDOCOUNTS)
+    parser.add_argument("--amplicon_dirichlet_parameter", "-c", default=AMPLICON_DIRICHLET_PARAMETER)
+    parser.add_argument("--snv_dirichlet_parameter", "-v", default=SNV_DIRICHLET_PARAMETER)
     parser.add_argument("--autoremove", action='store_true', help="Delete temproray files after execution.")
     parser.add_argument("--no_pcr_errors", action='store_true',
                         help="Turn off PCR errors. The output will contain only sequencing errors. Other PCR-error related options will be ignored")
@@ -178,6 +184,11 @@ def load_command_line_args() -> None:
     global REF_NAME
     REF_NAME = ref.name
     del ref
+
+    global SNV_BALANCE
+    SNV_BALANCE = float(args.snv_balance)
+    if SNV_BALANCE > 1.0 or SNV_BALANCE < 0.0:
+        raise ValueError(f"snv_balance parameter can only be between 0.0 and 1.0, but was {SNV_BALANCE}")
 
     global GENOMES_FILE
     GENOMES_FILE = args.genomes_file
@@ -267,10 +278,12 @@ def load_command_line_args() -> None:
     READ_LENGTH = int(args.read_length)
 
     global SEED
-    SEED = args.seed
-    np.random.seed(int(SEED))
-    random.seed(int(SEED))
-    logging.info(f"Random seed: {SEED}")
+    global RNG
+    if args.seed is not None:
+        SEED = np.random.SeedSequence(np.abs(int(args.seed)))
+        RNG = np.random.default_rng(SEED)
+    random.seed(int(SEED.entropy))
+    logging.info(f"Random seed: {int(SEED.entropy)}")
 
     global VERBOSE
     VERBOSE = not args.quiet
@@ -308,9 +321,13 @@ def load_command_line_args() -> None:
     global AMPLICON_DISTRIBUTION
     AMPLICON_DISTRIBUTION = args.amplicon_distribution
 
-    global AMPLICON_PSEUDOCOUNTS
-    AMPLICON_PSEUDOCOUNTS = int(args.amplicon_pseudocounts)
-    logging.info(f"Amplicon pseudocounts/ i.e. quality parameter: {AMPLICON_PSEUDOCOUNTS}")
+    global AMPLICON_DIRICHLET_PARAMETER
+    AMPLICON_DIRICHLET_PARAMETER = int(args.amplicon_dirichlet_parameter)
+    logging.info(f"Amplicon dirichlet_parameter: {AMPLICON_DIRICHLET_PARAMETER}")
+
+    global SNV_DIRICHLET_PARAMETER
+    SNV_DIRICHLET_PARAMETER = int(args.snv_dirichlet_parameter)
+    logging.info(f"SNV dirichlet_parameter: {SNV_DIRICHLET_PARAMETER}")
 
     global AUTOREMOVE
     AUTOREMOVE = args.autoremove
@@ -541,10 +558,10 @@ if __name__ == "__main__":
         genome_filename_short = ".".join(basename(genome_path).split(".")[:-1])
         lineage_reference = SeqIO.read(genome_path, format="fasta")
 
-        # use bowtie2 to create a dataframe with positions of each primer pair aligned to the genome
+        # use BWA to create a dataframe with positions of each primer pair aligned to the genome
         if VERBOSE:
             logging.info(f"Working on genome {genome_counter} of {n_genomes}")
-            logging.info(f"Using bowtie2 to align primers to genome {lineage_reference.description}")
+            logging.info(f"Using BWA to align primers to genome {lineage_reference.description}")
 
         hp.build_index(genome_path, join(INDICES_FOLDER, genome_filename_short))
         df = align_primers(genome_filename_short, INDICES_FOLDER, PRIMERS_FILE, VERBOSE)
@@ -560,9 +577,11 @@ if __name__ == "__main__":
         df_amplicons,
         AMPLICON_DISTRIBUTION,
         AMPLICON_DISTRIBUTION_FILE,
-        AMPLICON_PSEUDOCOUNTS,
+        PRIMER_BED,
+        AMPLICON_DIRICHLET_PARAMETER,
         genome_abundances,
-        N_READS
+        N_READS,
+        RNG
     )
 
     # write a summary csv
@@ -593,9 +612,8 @@ if __name__ == "__main__":
         }
 
         amplicons, n_reads, vcf_errordf = add_PCR_errors(
-            df_amplicons, genome_abundances, PATHS, REF_NAME,
-            RATES, DEL_LENGTH_GEOMETRIC_PARAMETER, INS_MAX_LENGTH,
-            VAF_PARAMETER_DICT, R_VAF_PARAMETER_DICT, DISALLOWED_POSITIONS
+            df_amplicons, genome_abundances, PATHS, REF_NAME, RATES, DEL_LENGTH_GEOMETRIC_PARAMETER,
+            INS_MAX_LENGTH, VAF_PARAMETER_DICT, R_VAF_PARAMETER_DICT, DISALLOWED_POSITIONS, RNG
         )
 
         if amplicons == "No":
@@ -633,7 +651,7 @@ if __name__ == "__main__":
         VERBOSE, TEMP_FOLDER, N_READS, FRAGMENT_AMPLICONS,
         FRAGMENT_LEN_MEAN, FRAGMENT_LEN_SD, ART_QSHIFT
     ) as art:
-        art.run(amplicons, n_reads)
+        art.run(amplicons, n_reads, RNG)
 
     # STEP 5: Clean up all of the temp. directories
     if AUTOREMOVE:
