@@ -7,7 +7,41 @@ from Bio import SeqIO
 from Bio.SeqIO.FastaIO import SeqRecord
 
 
-def build_index(genome_path: str, index_base: str, mkdir: bool = False):
+def check_stderr(err_string: str, tool: str) -> None:
+    """Check the UTF-8 decoded error string for a command run with `subprocess`"""
+    err = err_string.lower()
+    for e in ["[e::", "error", "err", "fail"]:
+        if e in err.lower():
+            err_str = f"{tool} error: {err}"
+            logging.error(err_str)
+            exit(err_str)
+
+
+def filter_ambigious_nucleotides(SNV_folder: str) -> None:
+
+    ambi_nuc_dict = {
+        "M": "AC", "R": "AG", "W": "AT", "S": "CG", "Y": "CT", "K": "GT",
+        "V": "ACG", "H": "ACT", "D": "AGT", "B": "CGT", "X": "GATC"
+    }
+
+    idx_to_remove = []
+    for file in os.listdir(SNV_folder):
+
+        path = os.path.join(SNV_folder, file)
+        df = pd.read_csv(path, delimiter="\t")
+        for i, snv in df.iterrows():
+            ref = snv["REF"].upper()
+            if ref in "ACGT":
+                continue
+
+            if ref == "N":
+                idx_to_remove.append(i)
+            elif snv["ALT"] in ambi_nuc_dict[ref]:
+                idx_to_remove.append(i)
+        df.drop(index=idx_to_remove).to_csv(path, sep="\t", index=False)
+
+
+def build_index(genome_path: str, index_base: str, mkdir: bool = False) -> None:
     """
     Function to build a BWA index base.
     - `genome_path`: Filepath to reference FASTA to make the index of.

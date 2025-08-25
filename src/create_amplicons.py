@@ -1,6 +1,6 @@
 import subprocess
-from os.path import join, basename
 from io import StringIO
+import os
 from Bio import SeqIO
 from Bio.SeqRecord import SeqRecord
 import pandas as pd
@@ -9,31 +9,55 @@ import logging
 import helpers as hp
 
 
-def align_primers(genome_filename_short: str, indices_folder: str, primers_files: str, verbose: bool = False):
+def get_alignment_df_and_call_SNVs(ref_path: str, genome_filename_short: str, indices_folder: str, primers_files: str, temp_folder: str, verbose: bool = False):
+    """Align primers to lineages"""
+    snv_folder = os.path.join(temp_folder, "SNV")
 
-    sp = subprocess.run(
-        ["bwa", "mem", "-k", "5", "-L", "1000", "-T", "16", join(indices_folder, genome_filename_short), primers_files],
-        # ["bowtie2", "-x", join(indices_folder, genome_filename_short), "-U", primers_files],
+    bwa_alignment = subprocess.run(
+        [
+            "bwa", "mem", "-k", "5", "-L", "1000", "-T", "16",
+            os.path.join(indices_folder, genome_filename_short), primers_files
+        ],
         stdout=subprocess.PIPE, stderr=subprocess.PIPE
     )
 
-    err = sp.stderr.decode()
-    for e in ["[e::", "error", "err", "fail"]:
-        if e in err.lower():
-            err_str = f"BWA error: {err}"
-            logging.error(err_str)
-            exit(err_str)
-    # if "(err)" in err.lower() or "error" in err.lower():
-    #     err_str = f"Bowtie2 error: {err}"
-    #     logging.error(err_str)
-    #     exit(err_str)
+    alignment = bwa_alignment.stdout.decode()
+    hp.check_stderr(bwa_alignment.stderr.decode(), "BWA")
 
-    alignment = StringIO(sp.stdout.decode())
+    # Alignment is needed for futher processing, but we don't need
+    # to make that data persistent if we call SNVs now.
+    sam_view = subprocess.run(
+        ["samtools", "view", "-b", "-"],
+        input=bwa_alignment.stdout, stdout=subprocess.PIPE, stderr=subprocess.PIPE
+    )
+    sam_sort = subprocess.run(
+        ["samtools", "sort", "-"],
+        input=sam_view.stdout, stdout=subprocess.PIPE, stderr=subprocess.PIPE
+    )
+    sam_mpile = subprocess.run(
+        ["samtools", "mpileup", "-aa", "-A", "-d", "600000", "-B", "-Q", "0", "--excl-flags", "0x804", "-"],
+        input=sam_sort.stdout, stdout=subprocess.PIPE, stderr=subprocess.PIPE
+    )
+    if len(sam_mpile.stdout) == 0:
+        logging.error("Something went wrong in primer-to-lineage alignment!")
+        exit(1)
+
+    os.makedirs(snv_folder, exist_ok=True)
+    ivar_variants = subprocess.run(
+        ["ivar", "variants", "-p", os.path.join(snv_folder, genome_filename_short + ".tsv"),
+            "-t", "0.99", "-r", ref_path],
+        input=sam_mpile.stdout, stdout=subprocess.PIPE, stderr=subprocess.PIPE
+    )
+    hp.check_stderr(ivar_variants.stderr.decode(), "iVar")
+    hp.filter_ambigious_nucleotides(snv_folder)
 
     # read alignment data as a dataframe
-    df = pd.read_csv(alignment, sep="\t", skiprows=[0, 1], header=None, names=[i for i in range(19)])
-    df = pd.DataFrame(df[[0, 2, 3, 9]])
-    df = df.rename(columns={0: "name", 2: "ref", 3: "start", 9: "seq"})
+    df = pd.read_csv(
+        StringIO(alignment), sep="\t",
+        skiprows=[0, 1], header=None, names=[i for i in range(19)]
+    )
+    df = pd.DataFrame(df[[0, 2, 3, 9, 13]])
+    df = df.rename(columns={0: "name", 2: "ref", 3: "start", 9: "seq", 13: "align_score"})
 
     # split the column "name" to extract useful data
     df["seq_len"] = df["seq"].apply(len)
@@ -44,15 +68,15 @@ def align_primers(genome_filename_short: str, indices_folder: str, primers_files
     df["handedness"] = name_df["handedness"]
     del name_df
 
-    # remove rows where the alignment mismatched
-    drop_rows = []
-    for r in df.itertuples():
-        if r.ref == "*":
-            if verbose:
-                logging.info(f"Dropping amplicon {r.amplicon_number}, couldn't find a match for the primer {r.name}")
-            drop_rows.append(r.Index)
+    # remove rows where the primer didn't align
+    keep = df["ref"] != "*"
+    if verbose:
+        for name in df[~keep]["name"].to_list():
+            logging.info(f"Couldn't find a match for the primer: {name}.\tDropping corresponding amplicon.")
+    df = df[keep]
 
-    df.drop(drop_rows, inplace=True)
+    # process alignment score tag (after dropping rows because of NaN scores)
+    df["align_score"] = df["align_score"].str.split(":").str[-1].astype(int)
 
     # Z: Merging with `suffixes` and on different columns makes this easier
     # Z: Does not merge on `is_alt` anymore to get every combination of fw/rv primers with alts (all biologically viable)
@@ -64,11 +88,14 @@ def align_primers(genome_filename_short: str, indices_folder: str, primers_files
         suffixes=["_left", "_right"]
     )
 
+    # Pick one "best" amplicon for those with alternates
+    df["align_score"] = df["align_score_left"] + df["align_score_right"]
+    df = df.sort_values("align_score").drop_duplicates("amplicon_number", keep='last').sort_index()
     # rename the columns to more understandable names
     df = pd.DataFrame(
         df[["ref", "amplicon_number", "alt_num_left",
             "start_left", "seq_left", "seq_len_left", "alt_num_right",
-            "start_right", "seq_right", "seq_len_right"]]
+            "start_right", "seq_right", "seq_len_right", "align_score"]]
     )
 
     df = df.rename(columns={
@@ -103,7 +130,7 @@ def write_amplicon(df: pd.DataFrame, reference: SeqRecord, genome_filename_short
         fasta_entries.append(fasta_entry)
 
     # Z: write all at once to a *single* FASTA file
-    with open(join(amplicons_folder, f"all_amplicons_{genome_filename_short}.fasta"), "w") as f:
+    with open(os.path.join(amplicons_folder, f"all_amplicons_{genome_filename_short}.fasta"), "w") as f:
         f.write("\n".join(fasta_entries))
 
 
@@ -118,9 +145,9 @@ if __name__ == "__main__":
     parser.add_argument("--verbose", help="Verbose mode.")
 
     args = parser.parse_args()
-    genome_filename_short = ".".join(basename(args.genome_path).split(".")[:-1])
+    genome_filename_short = ".".join(os.path.basename(args.genome_path).split(".")[:-1])
     reference = SeqIO.read(args.genome_path, format="fasta")
 
-    hp.build_index(args.genome_path, join(args.indices_folder, genome_filename_short))
-    df = align_primers(genome_filename_short, args.indices_folder, args.primers_file, args.verbose)
+    hp.build_index(args.genome_path, os.path.join(args.indices_folder, genome_filename_short))
+    df = get_alignment_df_and_call_SNVs(genome_filename_short, args.indices_folder, args.primers_file, args.verbose)
     write_amplicon(df, reference, genome_filename_short, args.amplicons_folder, verbose=args.verbose)

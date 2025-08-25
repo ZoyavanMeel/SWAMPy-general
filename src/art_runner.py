@@ -86,14 +86,14 @@ class ArtIllumina:
         if warning != "Warning: your simulation will not output any ALN or SAM file with your parameter settings!\n":
             logging.warning(warning)
 
-    def run(self, amplicons, n_reads, rng: np.random.Generator):
-        params = zip(amplicons, n_reads)
-        for a, n in params:
-            short_name = ".".join(basename(a).split(".")[:-1])
+    def run(self, filepaths, n_reads, rng: np.random.Generator):
+        params = zip(filepaths, n_reads)
+        for filepath, n in params:
+            short_name = ".".join(basename(filepath).split(".")[:-1])
             if self.verbose:
                 logging.info(f"Starting on file {short_name}.fasta with {n} reads")
 
-            self.run_once(a, n, join(self.temp, "tmp.sms.")+short_name+".", rng.integers(2 ** 63))
+            self.run_once(filepath, n, join(self.temp, "tmp.sms.")+short_name+".", rng.integers(2 ** 63))
 
         all_r1_files = sorted([x for x in glob.glob(join(self.temp, "tmp.sms.*")) if x[-4:] == "1.fq"])
         all_r2_files = sorted([x for x in glob.glob(join(self.temp, "tmp.sms.*")) if x[-4:] == "2.fq"])

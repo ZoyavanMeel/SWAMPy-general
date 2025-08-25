@@ -2,7 +2,6 @@ import argparse
 from os.path import dirname, join, abspath, basename
 from time import perf_counter
 import os
-import glob
 import logging
 from Bio import SeqIO
 import pandas as pd
@@ -11,11 +10,10 @@ import random
 import shutil
 
 from art_runner import art_illumina
-from create_amplicons import align_primers, write_amplicon
-from read_model import apply_amplicon_reads_sampler
-from PCR_error import add_PCR_errors
+from create_amplicons import get_alignment_df_and_call_SNVs, write_amplicon
+from biases import load_amp_dist_file, apply_bias, adjust_to_requested
+from errors import add_high_frequency_errors
 import helpers as hp
-
 
 # All these caps variables are set once (by user inputs, with default values) but then never touched again.
 BASE_DIR = join(dirname(dirname(abspath(__file__))), "example")
@@ -45,6 +43,7 @@ REF_NAME = "MN908947.3"
 REF_LEN = 29903
 INDEX_BASE = REFERENCE.strip(".fasta").strip("fa")
 
+# wastewater settings
 U_SUBS_RATE = 0.002485
 U_INS_RATE = 0.00002
 U_DEL_RATE = 0.000115
@@ -65,7 +64,6 @@ R_DEL_VAF_DIRICHLET_PARAMETER = DEL_VAF_DIRICHLET_PARAMETER
 
 SNV_BALANCE = 0.5
 SNV_DIRICHLET_PARAMETER = 200
-AMPLICON_DISTRIBUTION = "DIRICHLET_1"
 AMPLICON_DIRICHLET_PARAMETER = 200
 
 
@@ -117,8 +115,6 @@ def setup_parser() -> argparse.ArgumentParser:
                         help="Mean fragment length if using --fragment_amplicons", default=FRAGMENT_LEN_MEAN)
     parser.add_argument(
         "--fragment_len_sd", help="Standard deviation of fragment lengths if using --fragment_amplicons", default=FRAGMENT_LEN_SD)
-    parser.add_argument("--amplicon_distribution", help="Default is DIRICHLET1",
-                        default=AMPLICON_DISTRIBUTION)
     parser.add_argument("--amplicon_dirichlet_parameter", "-c", default=AMPLICON_DIRICHLET_PARAMETER)
     parser.add_argument("--snv_dirichlet_parameter", "-v", default=SNV_DIRICHLET_PARAMETER)
     parser.add_argument("--autoremove", action='store_true', help="Delete temproray files after execution.")
@@ -282,6 +278,7 @@ def load_command_line_args() -> None:
     if args.seed is not None:
         SEED = np.random.SeedSequence(np.abs(int(args.seed)))
         RNG = np.random.default_rng(SEED)
+
     random.seed(int(SEED.entropy))
     logging.info(f"Random seed: {int(SEED.entropy)}")
 
@@ -317,9 +314,6 @@ def load_command_line_args() -> None:
             logging.error(
                 f"Currently the mean fragment length is {FRAGMENT_LEN_MEAN}, the read length is {READ_LENGTH}.")
             exit(1)
-
-    global AMPLICON_DISTRIBUTION
-    AMPLICON_DISTRIBUTION = args.amplicon_distribution
 
     global AMPLICON_DIRICHLET_PARAMETER
     AMPLICON_DIRICHLET_PARAMETER = int(args.amplicon_dirichlet_parameter)
@@ -445,15 +439,16 @@ def load_command_line_args() -> None:
     }
 
 
-def remove_tmp(GENOMES_FOLDER, AMPLICONS_FOLDER, INDICES_FOLDER):
-    for directory in [GENOMES_FOLDER, AMPLICONS_FOLDER, INDICES_FOLDER]:
-        logging.info(f"Removing all files in {directory}")
-        files = glob.glob(join(directory, "*"))
-        for f in files:
-            os.remove(f)
+def remove_tmp(temp_folder: str):
+    for filename in os.listdir(temp_folder):
+        file_path = os.path.join(temp_folder, filename)
+        if os.path.isfile(file_path) or os.path.islink(file_path):
+            os.remove(file_path)
+        elif os.path.isdir(file_path):
+            shutil.rmtree(file_path)
 
 
-def format_ART_input(lineages_formatted, amplicons, n_reads, AMPLICONS_FOLDER):
+def format_ART_input(lineages_formatted: list, amplicons: list[str], n_reads: list[int], AMPLICONS_FOLDER: str) -> tuple[list[str], list[int]]:
     """Merge art_illumina runs which have the same read count to optimize"""
     merged_n_reads = list(set(n_reads))
     if merged_n_reads[0] == 0:
@@ -461,7 +456,7 @@ def format_ART_input(lineages_formatted, amplicons, n_reads, AMPLICONS_FOLDER):
 
     merged_amplicons = [join(AMPLICONS_FOLDER, f"merged_amplicon_rcount_{a}.fasta") for a in merged_n_reads]
 
-    # Z: First read the amplicon fasta as a whole to simpify jumping around.
+    # Z: First read the amplicon fasta as a whole to simplify jumping around.
     #    Order can't(?) be guarantueed due to dropout and such
     #    Can't be bothered to change much about the original structure either
     with open(join(AMPLICONS_FOLDER, "all_original_amplicons.fasta"), "w") as af:
@@ -501,7 +496,7 @@ def format_ART_input(lineages_formatted, amplicons, n_reads, AMPLICONS_FOLDER):
                         # each fasta is two lines: name, sequence
                         merged_handle.write(af.readline())
                         merged_handle.write(af.readline())
-    return merged_n_reads, merged_amplicons
+    return merged_amplicons, merged_n_reads
 
 
 if __name__ == "__main__":
@@ -520,7 +515,7 @@ if __name__ == "__main__":
 
     # Read genome abundances csv file
     genome_abundances = {}
-    df_amplicons = pd.DataFrame()
+    amplicon_df = pd.DataFrame()
 
     with open(ABUNDANCES_FILE2) as ab_file:
         for line in ab_file:
@@ -564,45 +559,27 @@ if __name__ == "__main__":
             logging.info(f"Using BWA to align primers to genome {lineage_reference.description}")
 
         hp.build_index(genome_path, join(INDICES_FOLDER, genome_filename_short))
-        df = align_primers(genome_filename_short, INDICES_FOLDER, PRIMERS_FILE, VERBOSE)
+        df = get_alignment_df_and_call_SNVs(
+            genome_path, genome_filename_short, INDICES_FOLDER, PRIMERS_FILE, TEMP_FOLDER, VERBOSE
+        )
         df["abundance"] = genome_abundances[df["ref"][0]]
 
         # write the amplicons to a file
         write_amplicon(df, lineage_reference, genome_filename_short, AMPLICONS_FOLDER)
 
-        df_amplicons = pd.concat([df_amplicons, df])
+        amplicon_df = pd.concat([amplicon_df, df])
 
-    # pick total numbers of reads for each amplicon
-    df_amplicons = apply_amplicon_reads_sampler(
-        df_amplicons,
-        AMPLICON_DISTRIBUTION,
-        AMPLICON_DISTRIBUTION_FILE,
-        PRIMER_BED,
-        AMPLICON_DIRICHLET_PARAMETER,
-        genome_abundances,
-        N_READS,
-        RNG
-    )
-
-    # write a summary csv
-    df_amplicons[[
-        "ref", "amplicon_number", "alt_num_left", "alt_num_right",
-        "total_n_reads", "abundance", "genome_n_reads",
-        "hyperparameter", "amplicon_prob", "n_reads"
-    ]].to_csv(join(OUTPUT_FOLDER, f"{OUTPUT_FILENAME_PREFIX}_amplicon_abundances_summary.tsv"), sep="\t")
-
-    df_amplicons.reset_index(drop=True, inplace=True)
-
-    if VERBOSE:
-        logging.info(f"Total number of reads was {sum(df_amplicons['n_reads'])}, when {N_READS} was expected.")
+    # Set amplicon distribution based on hyperparameters
+    amplicon_df.reset_index(drop=True, inplace=True)
+    amp_dist_df = load_amp_dist_file(AMPLICON_DISTRIBUTION_FILE, PRIMER_BED)
+    amplicon_df = amplicon_df.merge(amp_dist_df, on=["amplicon_number", "alt_num_left", "alt_num_right"], how="left")
 
     # STEP 3: Library Prep - PCR Amplification of Amplicons
-    if NO_PCR_ERRORS:
-        amplicons = list(df_amplicons["amplicon_filepath"])
-        n_reads = list(df_amplicons["n_reads"])
-    else:
+    # This will distribute the "hyperparameter" across different versions (i.e. different errors)
+    # of the same amplicon using the VAF parameters. So hyperparam(original_amplicon) = hyperparam(amp_v1) + hyperparam(amp_v2)
+    if not NO_PCR_ERRORS:
         if VERBOSE:
-            logging.info(f"Introducing PCR errors")
+            logging.info(f"Adding high-frequency errors")
 
         PATHS = {
             "PRIMER_BED": PRIMER_BED,
@@ -611,38 +588,75 @@ if __name__ == "__main__":
             "AMPLICONS_FOLDER": AMPLICONS_FOLDER
         }
 
-        amplicons, n_reads, vcf_errordf = add_PCR_errors(
-            df_amplicons, genome_abundances, PATHS, REF_NAME, RATES, DEL_LENGTH_GEOMETRIC_PARAMETER,
+        # Kind of by definition, you can't know which errors come from the PCR process and which from the wastewater
+        # environment. These two together are the "high-frequency errors" and encompasses both
+        amplicon_df, vcf_errordf = add_high_frequency_errors(
+            amplicon_df, genome_abundances, PATHS, REF_NAME, RATES, DEL_LENGTH_GEOMETRIC_PARAMETER,
             INS_MAX_LENGTH, VAF_PARAMETER_DICT, R_VAF_PARAMETER_DICT, DISALLOWED_POSITIONS, RNG
         )
 
-        if amplicons == "No":
-            if VERBOSE:
-                logging.info(f"No PCR error was introduced! Possible reason: too low error rates.")
-
-            amplicons = list(df_amplicons["amplicon_filepath"])
-            n_reads = list(df_amplicons["n_reads"])
+        if isinstance(vcf_errordf, str) and VERBOSE:
+            logging.info(f"No high-frequency errors were introduced! Possible reason: too low error rates.")
         else:
-            with open(f"{OUTPUT_FOLDER}/{OUTPUT_FILENAME_PREFIX}_PCR_errors.vcf", "w") as o:
-                o.write("##fileformat=VCFv4.3\n")
-                o.write(f"##reference={REF_NAME}\n")
-                o.write(f'##contig=<ID={REF_NAME},length={REF_LEN}>\n')
-                o.write('##INFO=<ID=VAF,Number=A,Type=Float,Description="Variant Allele Frequency">\n')
-                o.write(
-                    '##INFO=<ID=REC,Number=A,Type=String,Description="Recurrence state across source genomes. R: recurrent; U: unique to genome">\n')
-                o.write('#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n')
+            vcf_path = f"{OUTPUT_FOLDER}/{OUTPUT_FILENAME_PREFIX}_hf_errors.vcf"
+            if os.path.exists(vcf_path):
+                os.remove(vcf_path)
+            with open(vcf_path, "w") as o:
+                o.writelines([
+                    "##fileformat=VCFv4.3\n",
+                    f"##reference={REF_NAME}\n",
+                    f'##contig=<ID={REF_NAME},length={REF_LEN}>\n'
+                    '##INFO=<ID=VAF,Number=A,Type=Float,Description="Variant Allele Frequency">\n',
+                    '##INFO=<ID=REC,Number=A,Type=String,Description="Recurrence state across source genomes. R: recurrent; U: unique to genome">\n',
+                    '#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n'
+                ])
 
-            vcf_errordf.to_csv(f"{OUTPUT_FOLDER}/{OUTPUT_FILENAME_PREFIX}_PCR_errors.vcf",
-                               mode="a", header=False, index=False, sep="\t", float_format='%.5f')
+            vcf_errordf.to_csv(vcf_path, mode="a", header=False, index=False, sep="\t", float_format='%.5f')
             if VERBOSE:
                 logging.info(
-                    f'All aimed PCR errros are written to "{OUTPUT_FOLDER}/{OUTPUT_FILENAME_PREFIX}_PCR_errors.vcf"')
+                    f'All aimed high-frequency errrors are written to "{OUTPUT_FOLDER}/{OUTPUT_FILENAME_PREFIX}_hf_errors.vcf"')
+
+    # Now that we have each variation of amplicon and their corresponding 'hyperparameter',
+    # we can add the SNV-bias based on it and see how many reads of each ART has to generate.
+    if VERBOSE:
+        logging.info(f"Adding SNV bias (balance={SNV_BALANCE})")
+    amplicon_df = apply_bias(
+        amplicon_df, TEMP_FOLDER, RNG, N_READS,
+        genome_abundances, AMPLICON_DIRICHLET_PARAMETER,
+        SNV_DIRICHLET_PARAMETER, SNV_BALANCE
+    )
+
+    # amplicon_df["n_reads"] = adjust_to_requested(amplicon_df["n_reads"], N_READS)
+
+    # pick total numbers of reads for each amplicon
+    # df_amplicons = apply_amplicon_reads_sampler(
+    #     df_amplicons,
+    #     AMPLICON_DISTRIBUTION,
+    #     amp_dist_df,
+    #     AMPLICON_DIRICHLET_PARAMETER,
+    #     genome_abundances,
+    #     N_READS,
+    #     RNG
+    # )
+    # df_amplicons.reset_index(drop=True, inplace=True)
+    if VERBOSE:
+        logging.info(f"Total number of reads was {sum(amplicon_df['n_reads'])}, when {N_READS} was expected.")
+
+    # write a summary csv
+    amplicon_df[[
+        "ref", "amplicon_number", "alt_num_left", "alt_num_right", "var_num",
+        "total_n_reads", "abundance", "genome_n_reads",
+        "hyperparameter", "amplicon_prop", "SNVs_in_primers", "n_reads"
+    ]].to_csv(join(OUTPUT_FOLDER, f"{OUTPUT_FILENAME_PREFIX}_amplicon_abundances_summary.tsv"), sep="\t")
 
     # STEP 4: Simulate Reads
-    n_reads, amplicons = format_ART_input(lineages_formatted, amplicons, n_reads, AMPLICONS_FOLDER)
+    filepaths, n_reads = format_ART_input(
+        lineages_formatted, amplicon_df["amplicon_filepath"].tolist(),
+        amplicon_df["n_reads"].tolist(), AMPLICONS_FOLDER
+    )
 
-    t2 = perf_counter() - t1
-    print("Time (pre-ART):", t2)
+    t2 = perf_counter()
+    t_pre_art = t2 - t1
 
     logging.info("Generating reads using art_illumina, cycling through all genomes and remaining amplicons.")
     with art_illumina(
@@ -651,8 +665,13 @@ if __name__ == "__main__":
         VERBOSE, TEMP_FOLDER, N_READS, FRAGMENT_AMPLICONS,
         FRAGMENT_LEN_MEAN, FRAGMENT_LEN_SD, ART_QSHIFT
     ) as art:
-        art.run(amplicons, n_reads, RNG)
+        art.run(filepaths, n_reads, RNG)
+    t_art = perf_counter() - t2
 
     # STEP 5: Clean up all of the temp. directories
     if AUTOREMOVE:
-        remove_tmp(GENOMES_FOLDER, AMPLICONS_FOLDER, INDICES_FOLDER)
+        remove_tmp(TEMP_FOLDER)
+    if VERBOSE:
+        logging.info(f"Time (pre-ART): {t_pre_art:.3f}")
+        logging.info(f"Time (ART)    : {t_art:.3f}")
+        logging.info(f"Time (Total)  : {perf_counter() - t1:.3f}")
