@@ -10,3 +10,4 @@ __pycache__/
 src/tmp*
 simulation_output*
 .DS_Store
+test/
