@@ -11,3 +11,5 @@ src/tmp*
 simulation_output*
 .DS_Store
 test/
+example/temp/
+logs/

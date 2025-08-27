@@ -58,6 +58,19 @@ def build_error_df(
     return errors
 
 
+def amplicon_lookup(primer_df: pd.DataFrame, position: int, recurrent: bool) -> list[str]:
+    # Find amplicons corresponding to a given position and sample in which the error (position) goes in case it's unique.
+
+    mask = (position >= primer_df["Start_left"]) & (position <= primer_df["End_right"])
+    corr_amps_df = primer_df.loc[mask, ["amplicon_number", "alt_num_left", "alt_num_right"]]
+    # needs to be hashable for random.sample
+    corresponding_amplicons = list(corr_amps_df.itertuples(index=False, name=None))
+
+    if len(corresponding_amplicons) > 0 and not recurrent:
+        return random.sample(corresponding_amplicons, k=1)
+    return corresponding_amplicons
+
+
 def add_high_frequency_errors(
     df_amplicons: pd.DataFrame, genome_abundances: dict,
     PATHS: dict[str, str], REF_NAME: str, RATES: dict[str, float],
@@ -91,7 +104,7 @@ def add_high_frequency_errors(
     )
 
     # all amplicons to be mutated
-    error_amplicons = [item for sublist in errors["amplicons"] for item in sublist]
+    error_amplicons = [amp for amp_list in errors["amplicons"] for amp in amp_list]
 
     # corresponding error index for that amplicon                 # str even though they're lists; that's just pandas
     indices = np.repeat(a=errors.index, repeats=errors["amplicons"].str.len())
@@ -108,43 +121,44 @@ def add_high_frequency_errors(
         for lineage in genome_abundances.keys()
     }
 
-    def amplicon_alignment(row) -> pd.Series:
+    def amplicon_alignment(row: pd.Series) -> pd.Series:
         """Simple getter for the align_dfs so that I don't have to change too much of the original structure"""
         df = align_dfs[row["ref"]]
-        return df[df["amplicon_number"] == str(row["amplicon_number"])].reset_index(drop=True)
+        # Z: If you're looling for time-saves, this is where! Because we need to index on the alt_nums as well as the
+        #    amplicon_number (MultiIndex), this takes MUCH longer than only using the amplicon_number (if you ignore alts).
+        #    There's most likely a way to do this faster?
+        return df.loc[tuple(row[["amplicon_number", "alt_num_left", "alt_num_right"]].astype(str))]
 
     split_rows = []
+    pulled_hyperparams_for_each_error = {}
     for _, row in df_amplicons.iterrows():
         # Sometimes more than 1 error are introduced to the same amplicon.
         # Find all errors that will be introduced to that amplicon
-        # Z: this is *fine* with alternate amplicons, because they will overlap nearly the exact same region
-        #    we check later what the alts are doing
-        mut_indices = [
-            indices[idx] for idx, a in enumerate(error_amplicons)
-            if a == row["amplicon_number"] and row["ref"] in errors.loc[indices[idx], "genome"]
+        mut_indices = [  # amp = (amp_num, alt_num_l, alt_num_r)
+            indices[idx] for idx, amp in enumerate(error_amplicons)
+            if amp[0] == row["amplicon_number"] and
+            amp[1] == row["alt_num_left"] and
+            amp[2] == row["alt_num_right"] and
+            row["ref"] in errors.loc[indices[idx], "genome"]
         ]
 
         if len(mut_indices) == 0:
             split_rows.append(row)
             continue
 
-        # TODO: handle alternate amplicons
-        # rn it only checks on matching amplicon number, which is fine,
-        # but it means that `alignment` can be a DataFrame instead of a Series
-        # -> needs to be handled accordingly
         alignment = amplicon_alignment(row)
 
         # if the amplicon contains too many Ns it will not align, skip introducing PCR error to those
-        # with Bowtie2: won't align
-        # with BWA: soft-clip like crazy
-        short_cigar = alignment["CIGAR"][0]
+        # Z: with Bowtie2: won't align
+        #    with BWA: soft-clip like crazy
+        short_cigar = alignment["CIGAR"]
         if short_cigar == "*" or "S" in short_cigar:
             split_rows.append(row)
             continue
 
         # Start position and the sequence of the alignment(amplicon)
-        start_p = alignment["start"][0]-1
-        seq = alignment["seq"][0]
+        start_p = alignment["start"]-1
+        seq = alignment["seq"]
 
         # Record the CIGAR as a long string. i.e. "MMMII" instead of "3M2I"
         CIGAR = get_long_cigar(short_cigar)
@@ -182,25 +196,31 @@ def add_high_frequency_errors(
                 # CIGAR is shorter, all deletions at the end, skip the error
                 elif c_idx == len(CIGAR)-1 and ref_idx != aim:
                     logging.warning(
-                        f"A PCR error is skipped since the position does not exist in the amplicon {row['amplicon_filepath']}. This is not a significant problem if you see only one of this warning. Otherwise see Extra options and potential bugs section."
+                        f"""A PCR error is skipped since the position does not exist in the amplicon ({row['amplicon_filepath']}).
+This is not a significant problem if you see only one of this warning. It likely means the amplicon shifted wrt to the reference and that caused the artificial error to not exist on the amplicon anymore."""
                     )
                     seq_pos.append(ISSUE_6_BUG_CODE)  # dummy placeholder (issue #6)
 
             # How many reads this specific error will have
-            # Z: I changed this to take a percentge of the amplicon_hyperparameter instead of n_reads
+            # Z: I changed this to take a percentage of the amplicon_hyperparameter instead of n_reads
             #    as it does in SWAMPy. This makes it so that the comments here talk about "reads" when
             #    that's not the case anymore.
-            mut_hyperparamer = rng.binomial(int(row["hyperparameter"]*HP_FACTOR), errors.loc[mut_idx, "VAF"])
-
+            err_pos = errors.loc[mut_idx, "pos"]
+            try:
+                mut_hyperparameter = pulled_hyperparams_for_each_error[err_pos]
+            except KeyError:
+                mut_hyperparameter = rng.binomial(int(row["hyperparameter"]*HP_FACTOR), errors.loc[mut_idx, "VAF"])
+                pulled_hyperparams_for_each_error[err_pos] = mut_hyperparameter
             # if number of reads and/or VAF are small, this can be 0
-            if mut_hyperparamer != 0:
+            if mut_hyperparameter != 0:
                 # Take that many samples from the total of the imaginary reads of that amplicon
-                hyperparameter_prop = sorted(random.sample(
-                    range(int(row["hyperparameter"]*HP_FACTOR)), k=mut_hyperparamer))
+                hyperparameter_prop = sorted(
+                    random.sample(range(int(row["hyperparameter"]*HP_FACTOR)), k=mut_hyperparameter)
+                )
                 hyperparameter_prop = [str(a) for a in hyperparameter_prop]
                 hyperparameter_prop = [a+"," for a in hyperparameter_prop]  # "," will be used for grouping
 
-                muts = [str(mut_idx)]*mut_hyperparamer  # keep track of the mutation
+                muts = [str(mut_idx)]*mut_hyperparameter  # keep track of the mutation
                 muts = [a+"," for a in muts]
 
                 hyperparameter_df = pd.DataFrame(dict(hyperparameter=hyperparameter_prop, muts=muts))
@@ -245,17 +265,6 @@ def alts(ref: str, type: str, len: int = 0) -> str:
     else:  # insertion
         insert = random.choices(nucs, k=len)
         return ref + "".join(insert)
-
-
-def amplicon_lookup(primer_df: pd.DataFrame, position: int, recurrent: bool) -> list[str]:
-    # Find amplicons corresponding to a given position
-
-    mask = (position >= primer_df["Start_left"]) & (position <= primer_df["End_right"])
-    corresponding_amplicons = primer_df.loc[mask, "amplicon_number"].tolist()
-
-    if len(corresponding_amplicons) > 0 and not recurrent:
-        return random.sample(corresponding_amplicons, k=1)
-    return corresponding_amplicons
 
 
 def no_del_in_disallowed(errors: pd.DataFrame, disallowed: np.ndarray) -> pd.DataFrame:
@@ -365,6 +374,9 @@ def split_hyperparameter_per_error_variation(amp_row: pd.Series, hyperparameters
         # write the fasta file of the new amplicon.
         # Name all the PCR error combinations as _p1, _p2 and etc.
         with open(os.path.join(paths['AMPLICONS_FOLDER'], new_path), "w") as new_amp:
+            if len(new_seq) < 250:
+                print(new_row)
+                print(new_seq)
             new_amp.write(f">{new_path[:-6]}\n")
             new_amp.write(new_seq + "\n")
     return split_rows
@@ -398,6 +410,10 @@ def mutate_amplicon(seq: str, mutation_df: pd.DataFrame) -> str:
                 subseq = seq[mutation.seq_pos+1:]
 
             new_seq += subseq[mutation.length-1:]
+
+    # This can happen if mutation_df is empty, which can happen because of the ISSUE_6_BUG_CODE
+    if new_seq == "":
+        return seq
     return new_seq
 
 
@@ -441,4 +457,8 @@ def align_amps_to_ref(PATHS: dict[str, str], amp_path: str):
     name_df = align_df["name"].str.split("_", expand=True)
     name_df = name_df[name_df.columns[-3:]]
     name_df.columns = ["amplicon_number", "alt_num_left", "alt_num_right"]
-    return align_df.merge(name_df, left_index=True, right_index=True)
+    return align_df.merge(
+        name_df, left_index=True, right_index=True
+    ).set_index(
+        ["amplicon_number", "alt_num_left", "alt_num_right"]
+    )

@@ -11,7 +11,7 @@ import shutil
 
 from art_runner import art_illumina
 from create_amplicons import get_alignment_df_and_call_SNVs, write_amplicon
-from biases import load_amp_dist_file, apply_bias, adjust_to_requested
+from biases import load_amp_dist_file, apply_bias, correct_dropout_rate
 from errors import add_high_frequency_errors
 import helpers as hp
 
@@ -44,15 +44,21 @@ REF_LEN = 29903
 INDEX_BASE = REFERENCE.strip(".fasta").strip("fa")
 
 # wastewater settings
-U_SUBS_RATE = 0.002485
-U_INS_RATE = 0.00002
-U_DEL_RATE = 0.000115
-R_SUBS_RATE = 0.003357
-R_INS_RATE = 0.00002
-R_DEL_RATE = 0
+MUT_RATE_SCALING = 5
+
+U_SUBS_RATE = 0.002485 * MUT_RATE_SCALING
+U_INS_RATE = 0.00002 * MUT_RATE_SCALING
+U_DEL_RATE = 0.000115 * MUT_RATE_SCALING
+R_SUBS_RATE = 0.003357 * MUT_RATE_SCALING
+R_INS_RATE = 0.00002 * MUT_RATE_SCALING
+R_DEL_RATE = 0 * MUT_RATE_SCALING
 
 DEL_LENGTH_GEOMETRIC_PARAMETER = 0.69
 INS_MAX_LENGTH = 14
+
+# clinical   = 0.100
+# wastewater = 0.133
+DROPOUT_RATE = 0.100
 
 SUBS_VAF_DIRICHLET_PARAMETER = "0.29,1.89"
 INS_VAF_DIRICHLET_PARAMETER = "0.33,0.45"
@@ -103,8 +109,10 @@ def setup_parser() -> argparse.ArgumentParser:
         "--qprof1", help="Custom quality score profile for R1 reads (ART) - use with --seqSys=custom", default=QPROF1)
     parser.add_argument(
         "--qprof2", help="Custom quality score profile for R1 reads (ART) - use with --seqSys=custom", default=QPROF2)
-    parser.add_argument("--n_reads", "-n",
-                        help="Approximate number of reads in fastq file (subject to sampling stochasticity).", default=N_READS)
+    parser.add_argument(
+        "--n_reads", "-n", help="Approximate number of reads in fastq file (subject to sampling stochasticity).", default=N_READS)
+    parser.add_argument("--dropout_rate", "-d",
+                        help="Approximate percentage of amplicons dropped (subject to sampling stochasticity).", default=DROPOUT_RATE)
     parser.add_argument("--read_length", "-l",
                         help="Length of reads taken from the sequencing machine.", default=READ_LENGTH)
     parser.add_argument("--seed", "-s", help="Random seed integer (must be non-negative)")
@@ -185,6 +193,11 @@ def load_command_line_args() -> None:
     SNV_BALANCE = float(args.snv_balance)
     if SNV_BALANCE > 1.0 or SNV_BALANCE < 0.0:
         raise ValueError(f"snv_balance parameter can only be between 0.0 and 1.0, but was {SNV_BALANCE}")
+
+    global DROPOUT_RATE
+    DROPOUT_RATE = float(args.dropout_rate)
+    if DROPOUT_RATE > 1.0 or DROPOUT_RATE < 0.0:
+        raise ValueError(f"dropout_rate parameter can only be between 0.0 and 1.0, but was {SNV_BALANCE}")
 
     global GENOMES_FILE
     GENOMES_FILE = args.genomes_file
@@ -570,9 +583,15 @@ if __name__ == "__main__":
         amplicon_df = pd.concat([amplicon_df, df])
 
     # Set amplicon distribution based on hyperparameters
-    amplicon_df.reset_index(drop=True, inplace=True)
+    amplicon_df.set_index(["amplicon_number", "alt_num_left", "alt_num_right"], inplace=True)
+    # amplicon_df.reset_index(drop=True, inplace=True)
     amp_dist_df = load_amp_dist_file(AMPLICON_DISTRIBUTION_FILE, PRIMER_BED)
-    amplicon_df = amplicon_df.merge(amp_dist_df, on=["amplicon_number", "alt_num_left", "alt_num_right"], how="left")
+    amplicon_df = amplicon_df.merge(
+        amp_dist_df,
+        left_index=True,
+        right_on=["amplicon_number", "alt_num_left", "alt_num_right"],
+        how="left"
+    )
 
     # STEP 3: Library Prep - PCR Amplification of Amplicons
     # This will distribute the "hyperparameter" across different versions (i.e. different errors)
@@ -625,8 +644,7 @@ if __name__ == "__main__":
         genome_abundances, AMPLICON_DIRICHLET_PARAMETER,
         SNV_DIRICHLET_PARAMETER, SNV_BALANCE
     )
-
-    # amplicon_df["n_reads"] = adjust_to_requested(amplicon_df["n_reads"], N_READS)
+    # amplicon_df = correct_dropout_rate(amplicon_df, DROPOUT_RATE, RNG)
 
     # pick total numbers of reads for each amplicon
     # df_amplicons = apply_amplicon_reads_sampler(

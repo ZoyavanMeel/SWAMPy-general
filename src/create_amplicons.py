@@ -88,9 +88,10 @@ def get_alignment_df_and_call_SNVs(ref_path: str, genome_filename_short: str, in
         suffixes=["_left", "_right"]
     )
 
-    # Pick one "best" amplicon for those with alternates
+    # # Pick one "best" amplicon for those with alternates
     df["align_score"] = df["align_score_left"] + df["align_score_right"]
-    df = df.sort_values("align_score").drop_duplicates("amplicon_number", keep='last').sort_index()
+    # df = df.sort_values("align_score").drop_duplicates("amplicon_number", keep='last').sort_index()
+
     # rename the columns to more understandable names
     df = pd.DataFrame(
         df[["ref", "amplicon_number", "alt_num_left",
