@@ -20,19 +20,24 @@ def get_alignment_df_and_call_SNVs(ref_path: str, genome_filename_short: str, in
         ],
         stdout=subprocess.PIPE, stderr=subprocess.PIPE
     )
-
-    alignment = bwa_alignment.stdout.decode()
     hp.check_stderr(bwa_alignment.stderr.decode(), "BWA")
 
     # Alignment is needed for futher processing, but we don't need
     # to make that data persistent if we call SNVs now.
-    sam_view = subprocess.run(
+    sam_view_sam = subprocess.run(
+        # remove sam header
+        ["samtools", "view", "-"],
+        input=bwa_alignment.stdout, stdout=subprocess.PIPE, stderr=subprocess.PIPE
+    )
+    alignment = sam_view_sam.stdout.decode()
+
+    sam_view_bam = subprocess.run(
         ["samtools", "view", "-b", "-"],
         input=bwa_alignment.stdout, stdout=subprocess.PIPE, stderr=subprocess.PIPE
     )
     sam_sort = subprocess.run(
         ["samtools", "sort", "-"],
-        input=sam_view.stdout, stdout=subprocess.PIPE, stderr=subprocess.PIPE
+        input=sam_view_bam.stdout, stdout=subprocess.PIPE, stderr=subprocess.PIPE
     )
     sam_mpile = subprocess.run(
         ["samtools", "mpileup", "-aa", "-A", "-d", "600000", "-B", "-Q", "0", "--excl-flags", "0x804", "-"],
@@ -53,8 +58,7 @@ def get_alignment_df_and_call_SNVs(ref_path: str, genome_filename_short: str, in
 
     # read alignment data as a dataframe
     df = pd.read_csv(
-        StringIO(alignment), sep="\t",
-        skiprows=[0, 1], header=None, names=[i for i in range(19)]
+        StringIO(alignment), sep="\t", header=None, names=[i for i in range(19)]
     )
     df = pd.DataFrame(df[[0, 2, 3, 9, 13]])
     df = df.rename(columns={0: "name", 2: "ref", 3: "start", 9: "seq", 13: "align_score"})
