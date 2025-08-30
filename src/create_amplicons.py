@@ -1,6 +1,7 @@
 import subprocess
 from io import StringIO
 import os
+import sys
 from Bio import SeqIO
 from Bio.SeqRecord import SeqRecord
 import pandas as pd
@@ -9,14 +10,94 @@ import logging
 import helpers as hp
 
 
-def get_alignment_df_and_call_SNVs(ref_path: str, genome_filename_short: str, indices_folder: str, primers_files: str, temp_folder: str, verbose: bool = False):
+def get_alignment_df_and_call_SNVs(
+    ref_path: str, genome_filename_short: str, indices_folder: str,
+    primer_fastq: str, primer_bed: str, temp_folder: str,
+    verbose: bool = False, no_align: str = "raise"
+):
     """Align primers to lineages"""
-    snv_folder = os.path.join(temp_folder, "SNV")
 
+    pool1_path, pool2_path = hp.split_primers_for_snv_pools(primer_bed, primer_fastq, temp_folder)
+
+    df_one = call_SNVs(ref_path, genome_filename_short, indices_folder, pool1_path, os.path.join(temp_folder, "SNV1"))
+    df_two = call_SNVs(ref_path, genome_filename_short, indices_folder, pool2_path, os.path.join(temp_folder, "SNV2"))
+
+    df = pd.concat([df_one, df_two])
+
+    # split the column "name" to extract useful data
+    df["seq_len"] = df["seq"].apply(len)
+
+    name_df = hp.process_amplicon_names(df["name"])
+    df["amplicon_number"] = name_df["amp_num"]
+    df["alt_num"] = name_df["alt_num"]
+    df["handedness"] = name_df["handedness"]
+    del name_df
+
+    # remove rows where the primer didn't align
+    keep = df["ref"] != "*"
+    if verbose:
+        for name in df[~keep]["name"].to_list():
+            logging.info(f"Couldn't find a match for the primer: {name}.\tDropping corresponding amplicon.")
+    df = df[keep]
+    if df.empty and no_align == "raise":
+        raise ValueError(f"None of the primers aligned to the given genome ({ref_path})! Can't simulate any reads.")
+    if df.empty and no_align == "warn":
+        logging.warn(f"None of the primers aligned to the given genome ({ref_path})! Can't simulate any reads.")
+        return
+
+    # process alignment score tag (after dropping rows because of NaN scores)
+    df["align_score"] = df["align_score"].str.split(":").str[-1].astype(int)
+
+    # Z: Merging with `suffixes` and on different columns makes this easier
+    # Z: Does not merge on `is_alt` anymore to get every combination of fw/rv primers with alts (all biologically viable)
+    # inner join the dataframe with itself, to get the pairs of primers and their start/end positions
+    df = pd.merge(
+        df.loc[df["handedness"] == "LEFT"],
+        df.loc[df["handedness"] == "RIGHT"],
+        on=["ref", "amplicon_number"],
+        suffixes=["_left", "_right"]
+    )
+    if df.empty and no_align == "raise":
+        raise ValueError(
+            f"No amplicons where both primers aligned to the given genome ({ref_path})! Can't simulate any reads.")
+    if df.empty and no_align == "warn":
+        logging.warning(
+            f"No amplicons where both primers aligned to the given genome ({ref_path})! Can't simulate any reads.")
+        return
+
+    # # Pick one "best" amplicon for those with alternates
+    df["align_score"] = df["align_score_left"] + df["align_score_right"]
+    # df = df.sort_values("align_score").drop_duplicates("amplicon_number", keep='last').sort_index()
+
+    # rename the columns to more understandable names
+    df = df[[
+        "ref", "amplicon_number", "alt_num_left",
+        "start_left", "seq_left", "seq_len_left", "alt_num_right",
+        "start_right", "seq_right", "seq_len_right", "align_score"
+    ]]
+
+    df = df.rename(columns={
+        "start_left": "left",
+        "seq_left": "left_primer",
+        "seq_len_left": "left_primer_length",
+        "start_right": "right",
+        "seq_right": "right_primer",
+        "seq_len_right": "right_primer_length"
+    })
+
+    # ampNum_altNumLeft_altNumRight
+    # Z: filepaths are now: /genome_amplicon_\d+_\d+_\d+\.fasta
+    df["amplicon_filepath"] = genome_filename_short + "_amplicon_" + df["amplicon_number"].astype(str)
+    df["amplicon_filepath"] += "_" + df["alt_num_left"].astype(str)
+    df["amplicon_filepath"] += "_" + df["alt_num_right"].astype(str) + ".fasta"
+    return df
+
+
+def call_SNVs(ref_path, genome_filename_short, indices_folder, primer_fastq, snv_folder):
     bwa_alignment = subprocess.run(
         [
             "bwa", "mem", "-k", "5", "-L", "1000", "-T", "16",
-            os.path.join(indices_folder, genome_filename_short), primers_files
+            os.path.join(indices_folder, genome_filename_short), primer_fastq
         ],
         stdout=subprocess.PIPE, stderr=subprocess.PIPE
     )
@@ -62,61 +143,6 @@ def get_alignment_df_and_call_SNVs(ref_path: str, genome_filename_short: str, in
     )
     df = pd.DataFrame(df[[0, 2, 3, 9, 13]])
     df = df.rename(columns={0: "name", 2: "ref", 3: "start", 9: "seq", 13: "align_score"})
-
-    # split the column "name" to extract useful data
-    df["seq_len"] = df["seq"].apply(len)
-
-    name_df = hp.process_amplicon_names(df["name"])
-    df["amplicon_number"] = name_df["amp_num"]
-    df["alt_num"] = name_df["alt_num"]
-    df["handedness"] = name_df["handedness"]
-    del name_df
-
-    # remove rows where the primer didn't align
-    keep = df["ref"] != "*"
-    if verbose:
-        for name in df[~keep]["name"].to_list():
-            logging.info(f"Couldn't find a match for the primer: {name}.\tDropping corresponding amplicon.")
-    df = df[keep]
-
-    # process alignment score tag (after dropping rows because of NaN scores)
-    df["align_score"] = df["align_score"].str.split(":").str[-1].astype(int)
-
-    # Z: Merging with `suffixes` and on different columns makes this easier
-    # Z: Does not merge on `is_alt` anymore to get every combination of fw/rv primers with alts (all biologically viable)
-    # inner join the dataframe with itself, to get the pairs of primers and their start/end positions
-    df = pd.merge(
-        df.loc[df["handedness"] == "LEFT"],
-        df.loc[df["handedness"] == "RIGHT"],
-        on=["ref", "amplicon_number"],
-        suffixes=["_left", "_right"]
-    )
-
-    # # Pick one "best" amplicon for those with alternates
-    df["align_score"] = df["align_score_left"] + df["align_score_right"]
-    # df = df.sort_values("align_score").drop_duplicates("amplicon_number", keep='last').sort_index()
-
-    # rename the columns to more understandable names
-    df = pd.DataFrame(
-        df[["ref", "amplicon_number", "alt_num_left",
-            "start_left", "seq_left", "seq_len_left", "alt_num_right",
-            "start_right", "seq_right", "seq_len_right", "align_score"]]
-    )
-
-    df = df.rename(columns={
-        "start_left": "left",
-        "seq_left": "left_primer",
-        "seq_len_left": "left_primer_length",
-        "start_right": "right",
-        "seq_right": "right_primer",
-        "seq_len_right": "right_primer_length"
-    })
-
-    # ampNum_altNumLeft_altNumRight
-    # Z: filepaths are now: /genome_amplicon_\d+_\d+_\d+\.fasta
-    df["amplicon_filepath"] = genome_filename_short + "_amplicon_" + df["amplicon_number"].astype(str)
-    df["amplicon_filepath"] += "_" + df["alt_num_left"].astype(str)
-    df["amplicon_filepath"] += "_" + df["alt_num_right"].astype(str) + ".fasta"
     return df
 
 
