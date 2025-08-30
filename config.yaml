@@ -1,0 +1,82 @@
+# VIRUS_NAME:
+#   reference_name: needed in case of multi-chromosome viruses
+#   ref_accessions:
+#     - list
+#     - of
+#     - chromosome accessions (no extension) even if it's only one
+#   primers: name of primers, no extension
+
+virus: nCOV19_clinical_simulated
+
+nCOV19_clinical_simulated:
+  reference_name: nCOV19_clinical_reference
+  consensus_set: nCOV19_clinical
+  ref_accessions:
+    - MN908947.3
+  primers: artic_v3_all_alt
+  c: 200
+  v: 200
+  b: 1
+  min_reads: 120_000
+  max_reads: 220_000
+  mem_mod: 0
+  time_mod: 0
+
+
+DENV1_simulated:
+  reference_name: DENV1_reference
+  consensus_set: DENV1
+  ref_accessions:
+    - NC_001477.1
+  primers: DENV1_primers
+  c: 200
+  v: 200
+  b: 1
+  min_reads: 600_000
+  max_reads: 1_100_000
+  mem_mod: 1
+  time_mod: 1
+
+DENV2_simulated:
+  reference_name: DENV2_reference
+  consensus_set: DENV2
+  ref_accessions:
+    - NC_001474.2
+  primers: DENV2_primers
+  c: 200
+  v: 200
+  b: 1
+  min_reads: 600_000
+  max_reads: 1_100_000
+  mem_mod: 1
+  time_mod: 1
+
+DENV3_simulated:
+  reference_name: DENV3_reference
+  consensus_set: DENV3
+  ref_accessions:
+    - NC_001475.2
+  primers: DENV3_primers
+  c: 200
+  v: 200
+  b: 1
+  n_samples: 400
+  min_reads: 600_000
+  max_reads: 1_100_000
+  mem_mod: 1
+  time_mod: 1
+
+DENV4_simulated:
+  reference_name: DENV4_reference
+  consensus_set: DENV4
+  ref_accessions:
+    - NC_002640.1
+  primers: DENV4_primers
+  c: 200
+  v: 200
+  b: 1
+  n_samples: 50
+  min_reads: 600_000
+  max_reads: 1_100_000
+  mem_mod: 1
+  time_mod: 1

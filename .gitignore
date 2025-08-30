@@ -13,3 +13,7 @@ simulation_output*
 test/
 example/temp/
 logs/
+abundances/
+.snakemake/
+slurm_logs/
+temp/

@@ -1,0 +1,101 @@
+configfile: "config.yaml"
+
+import os
+import random
+import numpy as np
+
+seed = 0
+random.seed(seed)
+RNG = np.random.default_rng(seed)
+
+VIRUS_NAME = config["virus"]
+VIRUS_DICT = config[VIRUS_NAME]
+
+N_THRESH = 0.05
+# FASTA_DIR = "../Master-Thesis-Project/data/consensus"
+
+
+def get_sample_names_from_consensus_fastas(wildcards: dict) -> list[str]:
+    lst = []
+    with open(f"../Master-Thesis-Project/data/n_percentage_consensus/n_percentage_{VIRUS_DICT['consensus_set']}.tsv") as fh:
+        for line in fh.readlines():
+            accession, percentage = line.strip().split("\t")
+            if float(percentage) <= N_THRESH:
+                lst.append(accession)
+    return lst
+    # lst = [
+    #     file.split(".")[0]
+    #     for file in os.listdir(f"{directory}/")
+    #     if file.split(".")[-1] == "fa"
+    # ]
+    # return RNG.choice(lst, replace=False, size=VIRUS_DICT["n_samples"])
+
+
+rule all:
+    input:
+        expand(
+            "../Master-Thesis-Project/data/fastq_files/{virus}/{sample}_{orient}.fastq",
+            sample=get_sample_names_from_consensus_fastas,
+            orient=[1, 2],
+            virus=[VIRUS_NAME]
+        )
+
+rule simulate_single_sample:
+    input:
+        primer_fastq=f"../Master-Thesis-Project/data/primer_fastqs/{VIRUS_DICT['primers']}.fastq",
+        primer_bed=f"../Master-Thesis-Project/data/primer_beds/{VIRUS_DICT['primers']}.bed",
+        sample_genome=f"../Master-Thesis-Project/data/consensus/{VIRUS_DICT['consensus_set']}/{{sample}}.fa",
+        sample_abundance=f"abundances/{VIRUS_NAME}/{{sample}}.tsv"
+    output:
+        fw=f"../Master-Thesis-Project/data/fastq_files/{VIRUS_NAME}/{{sample}}_1.fastq",
+        rv=f"../Master-Thesis-Project/data/fastq_files/{VIRUS_NAME}/{{sample}}_2.fastq"
+    params:
+        output_dir=f"simulation_output/{VIRUS_NAME}/{{sample}}",
+        c=VIRUS_DICT["c"],
+        v=VIRUS_DICT["v"],
+        b=VIRUS_DICT["b"],
+        seed=random.randint(0, 1_000_000),
+        total=random.randint(VIRUS_DICT['min_reads'], VIRUS_DICT['max_reads']),
+        vaf=""  # "--subs_VAF_alpha '9.28,0.945' --del_VAF_alpha '4.72,0.41' --ins_VAF_alpha '2.64,0.45'"
+    group:
+        "simulation_group"
+    log:
+        f"logs/simulate/{VIRUS_NAME}/{{sample}}.log"
+    shell:
+        """
+        python src/simulate_metagenome.py \
+            --primer_set c \
+            --primers_file {input.primer_fastq} \
+            --primer_bed {input.primer_bed} \
+            --genomes_file {input.sample_genome} \
+            --genome_abundances {input.sample_abundance} \
+            --output_filename_prefix {wildcards.sample} \
+            --output_folder {params.output_dir} \
+            --temp_folder "temp/{wildcards.sample}/" \
+            --snv_balance {params.b} \
+            -c {params.c} -v {params.v} \
+            --seed {params.seed} \
+            --autoremove \
+            -n {params.total} \
+            --seqSys MS \
+            --no_align warn {params.vaf} 2> {log}
+        if [ ! -f {params.output_dir}/{wildcards.sample}_R1.fastq ]; then
+            touch {params.output_dir}/{wildcards.sample}_R1.fastq
+            touch {params.output_dir}/{wildcards.sample}_R2.fastq
+        fi
+        mv {params.output_dir}/{wildcards.sample}_R1.fastq {output.fw}
+        mv {params.output_dir}/{wildcards.sample}_R2.fastq {output.rv}
+        """
+
+rule make_abundance_file_single_genome:
+    input:
+        genome=f"../Master-Thesis-Project/data/consensus/{VIRUS_DICT['consensus_set']}/{{sample}}.fa"
+    output:
+        f"abundances/{VIRUS_NAME}/{{sample}}.tsv"
+    group:
+        "simulation_group"
+    run:
+        with open(input["genome"], "r") as readh:
+            name = readh.readline().strip(">\n")
+            with open(output[0], "w") as writeh:
+                writeh.write(f"{name}\t1.0")

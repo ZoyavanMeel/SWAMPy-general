@@ -44,7 +44,7 @@ REF_LEN = 29903
 INDEX_BASE = REFERENCE.strip(".fasta").strip("fa")
 
 # wastewater settings
-MUT_RATE_SCALING = 5
+MUT_RATE_SCALING = 1
 
 U_SUBS_RATE = 0.002485 * MUT_RATE_SCALING
 U_INS_RATE = 0.00002 * MUT_RATE_SCALING
@@ -72,6 +72,8 @@ SNV_BALANCE = 0.5
 SNV_DIRICHLET_PARAMETER = 200
 AMPLICON_DIRICHLET_PARAMETER = 200
 
+NO_ALIGN = "raise"
+
 
 def setup_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Run SARS-CoV-2 metagenome simulation.")
@@ -89,6 +91,8 @@ def setup_parser() -> argparse.ArgumentParser:
                         required=True, choices=["a1", "a4", "a5", "n2", "c"])
     parser.add_argument("--snv_balance", "-b", help="Indicates the balance between the given amplicon distribution and the calculated SNV-bias. Default: 0.5 (50/50). Max/min = 1.0/0.0. Increasing this parameter increases the weight of the SNV-bias",
                         default=SNV_BALANCE)
+    parser.add_argument("--no_align", help="Indicates what to do if none of the primers align to a given genome (options: ['raise', 'warn'], default: 'raise')",
+                        default=NO_ALIGN)
     parser.add_argument("--primers_file",
                         help="Fastq file with formatted names of primers - see primer_sets folder for examples. Only needed if using --primer_set=custom.", default=None)
     parser.add_argument("--primer_bed",
@@ -199,6 +203,11 @@ def load_command_line_args() -> None:
     if DROPOUT_RATE > 1.0 or DROPOUT_RATE < 0.0:
         raise ValueError(f"dropout_rate parameter can only be between 0.0 and 1.0, but was {SNV_BALANCE}")
 
+    global NO_ALIGN
+    if args.no_align not in ["raise", "warn"]:
+        raise ValueError(f"no_align argument can only be ['raise', 'warn'], not {args.no_align}")
+    NO_ALIGN = args.no_align
+
     global GENOMES_FILE
     GENOMES_FILE = args.genomes_file
     global GENOMES_FILE2
@@ -238,42 +247,42 @@ def load_command_line_args() -> None:
     global PRIMER_SET
     PRIMER_SET = args.primer_set
 
-    global PRIMERS_FILE
+    global PRIMER_FASTQ
     global AMPLICON_DISTRIBUTION_FILE
     global PRIMER_BED
 
     if PRIMER_SET == "a1":
-        PRIMERS_FILE = join(PRIMER_SET_FOLDER, "artic_v3_primers_no_alts.fastq")
+        PRIMER_FASTQ = join(PRIMER_SET_FOLDER, "artic_v3_primers_no_alts.fastq")
         logging.info(f"Primer set: Artic v1")
         PRIMER_BED = join(PRIMER_SET_FOLDER, "articV3_no_alt.bed")
         AMPLICON_DISTRIBUTION_FILE = join(PRIMER_SET_FOLDER, "artic_v3_amplicon_distribution.tsv")
 
     elif PRIMER_SET == "a4":
-        PRIMERS_FILE = join(PRIMER_SET_FOLDER, "artic_v4_primers.fastq")
+        PRIMER_FASTQ = join(PRIMER_SET_FOLDER, "artic_v4_primers.fastq")
         logging.info(f"Primer set: Artic v4")
         PRIMER_BED = join(PRIMER_SET_FOLDER, "articV4.bed")
         AMPLICON_DISTRIBUTION_FILE = join(PRIMER_SET_FOLDER, "artic_v4_amplicon_distribution.tsv")
 
     elif PRIMER_SET == "a5":
-        PRIMERS_FILE = join(PRIMER_SET_FOLDER, "artic_v5.3_primers.fastq")
+        PRIMER_FASTQ = join(PRIMER_SET_FOLDER, "artic_v5.3_primers.fastq")
         logging.info(f"Primer set: Artic v5.3")
         PRIMER_BED = join(PRIMER_SET_FOLDER, "articV5.3.bed")
         AMPLICON_DISTRIBUTION_FILE = join(PRIMER_SET_FOLDER, "artic_v5.3_amplicon_distribution.tsv")
 
     elif PRIMER_SET == "n2":
-        PRIMERS_FILE = join(PRIMER_SET_FOLDER, "nimagen_v2_primers.fastq")
+        PRIMER_FASTQ = join(PRIMER_SET_FOLDER, "nimagen_v2_primers.fastq")
         logging.info(f"Primer set: Nimagen v2")
         PRIMER_BED = join(PRIMER_SET_FOLDER, "nimagenV2.bed")
         AMPLICON_DISTRIBUTION_FILE = join(PRIMER_SET_FOLDER, "nimagen_v2_amplicon_distribution.tsv")
 
     elif PRIMER_SET == "c":
-        PRIMERS_FILE = args.primers_file
+        PRIMER_FASTQ = args.primers_file
         logging.info("Primer set: Custom")
         PRIMER_BED = args.primer_bed
         AMPLICON_DISTRIBUTION_FILE = args.amplicon_distribution_file
 
     if args.primers_file:
-        PRIMERS_FILE = args.primers_file
+        PRIMER_FASTQ = args.primers_file
     if args.primer_bed:
         PRIMER_BED = args.primer_bed
     if args.amplicon_distribution_file:
@@ -573,9 +582,16 @@ if __name__ == "__main__":
 
         hp.build_index(genome_path, join(INDICES_FOLDER, genome_filename_short))
         df = get_alignment_df_and_call_SNVs(
-            genome_path, genome_filename_short, INDICES_FOLDER, PRIMERS_FILE, TEMP_FOLDER, VERBOSE
+            genome_path, genome_filename_short, INDICES_FOLDER, PRIMER_FASTQ, PRIMER_BED, TEMP_FOLDER, VERBOSE, NO_ALIGN
         )
-        df["abundance"] = genome_abundances[df["ref"][0]]
+        if df is None:
+            # no primers aligned and no_align='warn'
+            quit()
+        try:
+            df["abundance"] = genome_abundances[df["ref"][0]]
+        except KeyError:
+            print(df["ref"])
+            raise KeyError()
 
         # write the amplicons to a file
         write_amplicon(df, lineage_reference, genome_filename_short, AMPLICONS_FOLDER)

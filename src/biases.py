@@ -64,7 +64,8 @@ def apply_bias(
         if over target: ignore
         if under target: add read count
     """
-    amplicon_df = add_persistent_mutation_count(amplicon_df, os.path.join(temp_folder, "SNV"))
+    amplicon_df = add_persistent_mutation_count(amplicon_df, os.path.join(temp_folder, "SNV1"))
+    amplicon_df = add_persistent_mutation_count(amplicon_df, os.path.join(temp_folder, "SNV2"))
     amplicon_df.reset_index(inplace=True, drop=True)
 
     amplicon_df["total_n_reads"] = total_n_reads
@@ -89,6 +90,7 @@ def apply_bias(
 
     amplicon_df["amplicon_prop"] = 0.0
     amplicon_df["n_reads"] = 0
+
     amplicon_df["is_max"] = False
 
     for genome in unique_refs:
@@ -109,9 +111,12 @@ def apply_bias(
         # -> snv_dict["prop"][group]
 
         # What fraction of the genome reads should this SNV group get according to the fraction of amplicons in this group?
-        amp_read_props = amplicon_df.loc[indices, ["amplicon_prop", "is_max"]]
+        # amp_read_props = amplicon_df.loc[indices, "amplicon_prop"]
         # only assign reads to the amplicon variations that occur in highest proportion
+
+        amp_read_props = amplicon_df.loc[indices, ["amplicon_prop", "is_max"]]
         amp_read_props = amp_read_props.loc[amp_read_props["is_max"]]["amplicon_prop"]
+    
         amp_read_prop = amp_read_props.sum()
 
         if amp_read_props.empty:
@@ -130,11 +135,12 @@ def apply_bias(
 
         # Assign read allocations to corresponding indices
         amplicon_df.loc[amp_read_props.index, "n_reads"] = np.floor(allocations)
+        # amplicon_df.loc[indices, "n_reads"] = np.floor(allocations)
 
     # print(amplicon_df[["var_num", "amplicon_prop", "SNVs_in_primers", "n_reads"]].loc[90:150])
 
-    divisor = 10
-    multi = 10
+    divisor = 8
+    multi = 2
 
     amplicon_df.loc[amplicon_df["is_max"]] = make_sure_SNVs_are_low(
         amplicon_df.loc[amplicon_df["is_max"]],
@@ -185,11 +191,14 @@ def add_persistent_mutation_count(amplicon_df: pd.DataFrame, snv_folder: str) ->
         if snv_df.empty:
             continue
 
+        alt = int(snv_folder[-1])
+        alt_num_mask = (amplicon_df["alt_num_left"] == alt) | (amplicon_df["alt_num_right"])
         genome_mask = amplicon_df["ref"] == snv_df["REGION"].unique()[0]
-        amps_in_genome = amplicon_df.loc[genome_mask]
+        mask = alt_num_mask & genome_mask
+        amps_in_genome = amplicon_df.loc[mask]
         for _, snv in snv_df.iterrows():
             pos = snv["POS"]
-            amplicon_df.loc[genome_mask, "SNVs_in_primers"] += (((
+            amplicon_df.loc[mask, "SNVs_in_primers"] += (((
                 pos >= amps_in_genome["left"]
             ) & (
                 pos <= amps_in_genome["left"]+amps_in_genome["left_primer_length"]

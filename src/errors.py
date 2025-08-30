@@ -441,7 +441,7 @@ def align_amps_to_ref(PATHS: dict[str, str], amp_path: str):
 
     # filter out supplementary alignments
     samview = subprocess.run(
-        ["samtools", "view", "-F", "0x800", "-h", "-"],
+        ["samtools", "view", "-F", "0x800", "-"],
         input=alignment.stdout,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -450,7 +450,7 @@ def align_amps_to_ref(PATHS: dict[str, str], amp_path: str):
 
     # read alignment SAM as a dataframe
     align_df = pd.read_csv(
-        StringIO(out), sep="\t", skiprows=[0, 1, 2], header=None,
+        StringIO(out), sep="\t", header=None,
         usecols=[0, 3, 5, 9], names=["name", "start", "CIGAR", "seq"]
     )
 

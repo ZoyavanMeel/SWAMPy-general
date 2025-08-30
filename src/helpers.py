@@ -41,6 +41,29 @@ def filter_ambigious_nucleotides(SNV_folder: str) -> None:
         df.drop(index=idx_to_remove).to_csv(path, sep="\t", index=False)
 
 
+def split_primers_for_snv_pools(primer_bed: str, primer_fastq: str, temp_folder: str) -> tuple[str, str]:
+    df = pd.read_csv(primer_bed, sep="\t", index_col=False, header=None)
+    df = df[[i for i in range(6)]]
+    df.columns = ["Chr", "Start", "End", "Amplicon", "Pool", "Strand"]
+    pool_df = process_amplicon_names(df["Amplicon"])
+
+    pool_one = os.path.join(temp_folder, os.path.split(primer_fastq)[-1].removesuffix(".fastq")+"_1.fastq")
+    pool_two = os.path.join(temp_folder, os.path.split(primer_fastq)[-1].removesuffix(".fastq")+"_2.fastq")
+
+    with open(primer_fastq, "r") as pf, open(pool_one, "w") as p1, open(pool_two, "w") as p2:
+        for i, row in pool_df.iterrows():
+            fastq_lines = [pf.readline() for _ in range(4)]
+            if row["alt_num"] == 1:
+                p1.writelines(fastq_lines)
+            elif row["alt_num"] == 2:
+                p2.writelines(fastq_lines)
+            else:
+                print(row["alt_num"])
+                raise ValueError("""Oops, seems there is more than one alternate pair per original pair!
+Unfortunately, this has not been implemented :/ Can only handle 1 alternate pair.""")
+    return pool_one, pool_two
+
+
 def build_index(genome_path: str, index_base: str, mkdir: bool = False) -> None:
     """
     Function to build a BWA index base.
