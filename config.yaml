@@ -8,7 +8,21 @@
 
 virus: nCOV19_clinical_simulated
 
-nCOV19_clinical_simulated:
+
+nCOV19_synthetic:
+  reference_name: nCOV19_clinical_reference
+  ref_accessions:
+    - MN908947.3
+  primers: artic_v3_all_alt
+  has_alts: True
+  need_singleton_extraction: False
+  bioprojects:
+    - PRJNA737419
+  mem_mod: 0
+  time_mod: 0
+
+
+nCOV19_clinical_simulated_1:
   reference_name: nCOV19_clinical_reference
   consensus_set: nCOV19_clinical
   ref_accessions:
@@ -17,6 +31,25 @@ nCOV19_clinical_simulated:
   c: 200
   v: 200
   b: 1
+  score_thresh: 16
+  decay: 5
+  min_reads: 120_000
+  max_reads: 220_000
+  mem_mod: 0
+  time_mod: 0
+
+
+nCOV19_clinical_simulated_2:
+  reference_name: nCOV19_clinical_reference
+  consensus_set: nCOV19_clinical_2
+  ref_accessions:
+    - MN908947.3
+  primers: artic_v3_all_alt
+  c: 200
+  v: 200
+  b: 1
+  score_thresh: 16
+  decay: 5
   min_reads: 120_000
   max_reads: 220_000
   mem_mod: 0
@@ -32,6 +65,8 @@ DENV1_simulated:
   c: 200
   v: 200
   b: 1
+  score_thresh: 12
+  decay: 0.9
   min_reads: 600_000
   max_reads: 1_100_000
   mem_mod: 1
@@ -46,6 +81,8 @@ DENV2_simulated:
   c: 200
   v: 200
   b: 1
+  score_thresh: 12
+  decay: 2 # rerun
   min_reads: 600_000
   max_reads: 1_100_000
   mem_mod: 1
@@ -60,7 +97,8 @@ DENV3_simulated:
   c: 200
   v: 200
   b: 1
-  n_samples: 400
+  score_thresh: 12
+  decay: 0.8
   min_reads: 600_000
   max_reads: 1_100_000
   mem_mod: 1
@@ -75,7 +113,8 @@ DENV4_simulated:
   c: 200
   v: 200
   b: 1
-  n_samples: 50
+  score_thresh: 12
+  decay: 2 # rerun
   min_reads: 600_000
   max_reads: 1_100_000
   mem_mod: 1

@@ -43,15 +43,16 @@ REF_NAME = "MN908947.3"
 REF_LEN = 29903
 INDEX_BASE = REFERENCE.strip(".fasta").strip("fa")
 
-# wastewater settings
-MUT_RATE_SCALING = 1
+DECAY_CONST = 4
 
-U_SUBS_RATE = 0.002485 * MUT_RATE_SCALING
-U_INS_RATE = 0.00002 * MUT_RATE_SCALING
-U_DEL_RATE = 0.000115 * MUT_RATE_SCALING
-R_SUBS_RATE = 0.003357 * MUT_RATE_SCALING
-R_INS_RATE = 0.00002 * MUT_RATE_SCALING
-R_DEL_RATE = 0 * MUT_RATE_SCALING
+# wastewater settings
+
+U_SUBS_RATE = 0.002485
+U_INS_RATE = 0.00002
+U_DEL_RATE = 0.000115
+R_SUBS_RATE = 0.003357
+R_INS_RATE = 0.00002
+R_DEL_RATE = 0
 
 DEL_LENGTH_GEOMETRIC_PARAMETER = 0.69
 INS_MAX_LENGTH = 14
@@ -73,13 +74,14 @@ SNV_DIRICHLET_PARAMETER = 200
 AMPLICON_DIRICHLET_PARAMETER = 200
 
 NO_ALIGN = "raise"
+SCORE_THRESH = "16"
 
 
 def setup_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Run SARS-CoV-2 metagenome simulation.")
-    parser.add_argument("--genomes_file", "-g",
+    parser.add_argument("--genomes_file", "-g", required=True,
                         help="File containing all of the genome lineages to simulate", default=GENOMES_FILE)
-    parser.add_argument("--reference", "-r",
+    parser.add_argument("--reference", "-r", required=True,
                         help="File containing the reference sequence. Default: ../ref/MN908947.3.fasta", default=REFERENCE)
     parser.add_argument("--index_base",
                         help="BWA reference index folder (bwa_index_base). Default: ../ref/MN908947.3", default=INDEX_BASE)
@@ -89,8 +91,9 @@ def setup_parser() -> argparse.ArgumentParser:
                         help="TSV of genome abundances.", default=ABUNDANCES_FILE)
     parser.add_argument("--primer_set", help="Primer set. This sets defaults for the parameters, --primers_file, --primer_bed, and --amplicon_distribution_file, which are overwritten if separately provided. Can be either a1 for Artic v1, a4 for Artic v4, a5 for Artic v5.3, and n2 for Nimagen v2, or c for custom (custom provides no defaults, so each of --primers_file, --primer_bed, and --amplicon_distribution_file must be provided separately)",
                         required=True, choices=["a1", "a4", "a5", "n2", "c"])
-    parser.add_argument("--snv_balance", "-b", help="Indicates the balance between the given amplicon distribution and the calculated SNV-bias. Default: 0.5 (50/50). Max/min = 1.0/0.0. Increasing this parameter increases the weight of the SNV-bias",
-                        default=SNV_BALANCE)
+    parser.add_argument("--snv_balance", "-b", help="Indicates the balance between the given amplicon distribution and the calculated SNV-bias. Default: 0.5 (50/50). Max/min = 1.0/0.0. Increasing this parameter increases the weight of the SNV-bias", default=SNV_BALANCE)
+    parser.add_argument("--decay_const", help="Decay constant for the mutational exponential decay function (default=4)", default=DECAY_CONST)
+    parser.add_argument("--score_threshold", help="Minimum score threshold to set for primer to lineage alignment (-T in bwa mem) (default=16)", default=SCORE_THRESH)
     parser.add_argument("--no_align", help="Indicates what to do if none of the primers align to a given genome (options: ['raise', 'warn'], default: 'raise')",
                         default=NO_ALIGN)
     parser.add_argument("--primers_file",
@@ -193,6 +196,16 @@ def load_command_line_args() -> None:
     REF_NAME = ref.name
     del ref
 
+    global DECAY_CONST
+    DECAY_CONST = float(args.decay_const)
+
+    global SCORE_THRESH
+    SCORE_THRESH = args.score_threshold
+    try:
+        int(SCORE_THRESH)
+    except ValueError:
+        raise ValueError(f"score_threshold was not an integer: {SCORE_THRESH}")
+
     global SNV_BALANCE
     SNV_BALANCE = float(args.snv_balance)
     if SNV_BALANCE > 1.0 or SNV_BALANCE < 0.0:
@@ -201,7 +214,7 @@ def load_command_line_args() -> None:
     global DROPOUT_RATE
     DROPOUT_RATE = float(args.dropout_rate)
     if DROPOUT_RATE > 1.0 or DROPOUT_RATE < 0.0:
-        raise ValueError(f"dropout_rate parameter can only be between 0.0 and 1.0, but was {SNV_BALANCE}")
+        raise ValueError(f"dropout_rate parameter can only be between 0.0 and 1.0, but was {DROPOUT_RATE}")
 
     global NO_ALIGN
     if args.no_align not in ["raise", "warn"]:
@@ -582,7 +595,7 @@ if __name__ == "__main__":
 
         hp.build_index(genome_path, join(INDICES_FOLDER, genome_filename_short))
         df = get_alignment_df_and_call_SNVs(
-            genome_path, genome_filename_short, INDICES_FOLDER, PRIMER_FASTQ, PRIMER_BED, TEMP_FOLDER, VERBOSE, NO_ALIGN
+            genome_path, genome_filename_short, INDICES_FOLDER, PRIMER_FASTQ, PRIMER_BED, TEMP_FOLDER, SCORE_THRESH, VERBOSE, NO_ALIGN
         )
         if df is None:
             # no primers aligned and no_align='warn'
@@ -658,7 +671,7 @@ if __name__ == "__main__":
     amplicon_df = apply_bias(
         amplicon_df, TEMP_FOLDER, RNG, N_READS,
         genome_abundances, AMPLICON_DIRICHLET_PARAMETER,
-        SNV_DIRICHLET_PARAMETER, SNV_BALANCE
+        SNV_DIRICHLET_PARAMETER, SNV_BALANCE, DECAY_CONST
     )
     # amplicon_df = correct_dropout_rate(amplicon_df, DROPOUT_RATE, RNG)
 

@@ -12,15 +12,15 @@ import helpers as hp
 
 def get_alignment_df_and_call_SNVs(
     ref_path: str, genome_filename_short: str, indices_folder: str,
-    primer_fastq: str, primer_bed: str, temp_folder: str,
+    primer_fastq: str, primer_bed: str, temp_folder: str, score_thresh: int,
     verbose: bool = False, no_align: str = "raise"
 ):
     """Align primers to lineages"""
 
     pool1_path, pool2_path = hp.split_primers_for_snv_pools(primer_bed, primer_fastq, temp_folder)
 
-    df_one = call_SNVs(ref_path, genome_filename_short, indices_folder, pool1_path, os.path.join(temp_folder, "SNV1"))
-    df_two = call_SNVs(ref_path, genome_filename_short, indices_folder, pool2_path, os.path.join(temp_folder, "SNV2"))
+    df_one = call_SNVs(ref_path, genome_filename_short, indices_folder, pool1_path, os.path.join(temp_folder, "SNV1"), score_thresh)
+    df_two = call_SNVs(ref_path, genome_filename_short, indices_folder, pool2_path, os.path.join(temp_folder, "SNV2"), score_thresh)
 
     df = pd.concat([df_one, df_two])
 
@@ -93,10 +93,10 @@ def get_alignment_df_and_call_SNVs(
     return df
 
 
-def call_SNVs(ref_path, genome_filename_short, indices_folder, primer_fastq, snv_folder):
+def call_SNVs(ref_path, genome_filename_short, indices_folder, primer_fastq, snv_folder, score_thresh):
     bwa_alignment = subprocess.run(
         [
-            "bwa", "mem", "-k", "5", "-L", "1000", "-T", "16",
+            "bwa", "mem", "-k", "5", "-L", "1000", "-T", str(score_thresh),
             os.path.join(indices_folder, genome_filename_short), primer_fastq
         ],
         stdout=subprocess.PIPE, stderr=subprocess.PIPE

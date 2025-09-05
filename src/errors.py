@@ -461,4 +461,4 @@ def align_amps_to_ref(PATHS: dict[str, str], amp_path: str):
         name_df, left_index=True, right_index=True
     ).set_index(
         ["amplicon_number", "alt_num_left", "alt_num_right"]
-    )
+    ).sort_index()

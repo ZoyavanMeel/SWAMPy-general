@@ -4,10 +4,6 @@ import os
 import random
 import numpy as np
 
-seed = 0
-random.seed(seed)
-RNG = np.random.default_rng(seed)
-
 VIRUS_NAME = config["virus"]
 VIRUS_DICT = config[VIRUS_NAME]
 
@@ -23,12 +19,6 @@ def get_sample_names_from_consensus_fastas(wildcards: dict) -> list[str]:
             if float(percentage) <= N_THRESH:
                 lst.append(accession)
     return lst
-    # lst = [
-    #     file.split(".")[0]
-    #     for file in os.listdir(f"{directory}/")
-    #     if file.split(".")[-1] == "fa"
-    # ]
-    # return RNG.choice(lst, replace=False, size=VIRUS_DICT["n_samples"])
 
 
 rule all:
@@ -54,8 +44,11 @@ rule simulate_single_sample:
         c=VIRUS_DICT["c"],
         v=VIRUS_DICT["v"],
         b=VIRUS_DICT["b"],
-        seed=random.randint(0, 1_000_000),
-        total=random.randint(VIRUS_DICT['min_reads'], VIRUS_DICT['max_reads']),
+        decay=VIRUS_DICT["decay"],
+        n_min=VIRUS_DICT['min_reads'],
+        n_max=VIRUS_DICT['max_reads'],
+        score_thresh=VIRUS_DICT['score_thresh'],
+        ref=f"../Master-Thesis-Project/data/reference_sequences/{VIRUS_DICT['reference_name']}.fasta",
         vaf=""  # "--subs_VAF_alpha '9.28,0.945' --del_VAF_alpha '4.72,0.41' --ins_VAF_alpha '2.64,0.45'"
     group:
         "simulation_group"
@@ -65,6 +58,7 @@ rule simulate_single_sample:
         """
         python src/simulate_metagenome.py \
             --primer_set c \
+            --reference {params.ref} \
             --primers_file {input.primer_fastq} \
             --primer_bed {input.primer_bed} \
             --genomes_file {input.sample_genome} \
@@ -74,9 +68,10 @@ rule simulate_single_sample:
             --temp_folder "temp/{wildcards.sample}/" \
             --snv_balance {params.b} \
             -c {params.c} -v {params.v} \
-            --seed {params.seed} \
+            --decay_const {params.decay} \
+            --score_threshold {params.score_thresh} \
             --autoremove \
-            -n {params.total} \
+            -n $(python -c "import random, re; random.seed(int(re.search(r'(\\d+)$', '{wildcards.sample}').group())); print(random.randint({params.n_min}, {params.n_max}))") \
             --seqSys MS \
             --no_align warn {params.vaf} 2> {log}
         if [ ! -f {params.output_dir}/{wildcards.sample}_R1.fastq ]; then
