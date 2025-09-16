@@ -436,7 +436,7 @@ def align_amps_to_ref(PATHS: dict[str, str], amp_path: str):
         stderr=subprocess.PIPE
     )
 
-    out, err = alignment.stdout.decode(), alignment.stderr.decode()
+    err = alignment.stderr.decode()
     hp.check_stderr(err, "BWA")
 
     # filter out supplementary alignments

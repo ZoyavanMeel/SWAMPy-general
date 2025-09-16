@@ -11,19 +11,15 @@ pd.set_option('display.max_columns', None)
 pd.set_option('display.max_rows', None)
 
 
-def linear_decay(x): return 1/(x+1)
 def exp_decay(x, const=1): return np.exp(-x * const)
 def linear_decay(x, slope=1, intercept=20): return intercept - slope*x
+def sigmoid_decay(x): return 0.5 + 1 / (1 + np.exp(x))
 
 
 def distribute_reads_among_amp_vars(group: pd.DataFrame, rng: np.random.Generator):
     # total reads for this amplicon group (= {"n_reads": [n, 0, 0, 0, ...], "is_max": [True, False, False, False, ...]})
     n_reads = group["n_reads"].sum()
-
     props = group["amplicon_prop"].values
-
-    r_group = group.reset_index(drop=True)
-    max_idx = r_group.loc[r_group["is_max"]].index[0]
 
     norm_props = props / props.sum()  # normalize for this group of variations
 
@@ -33,21 +29,9 @@ def distribute_reads_among_amp_vars(group: pd.DataFrame, rng: np.random.Generato
 
 def apply_bias(
     amplicon_df: pd.DataFrame, temp_folder: str, rng: np.random.Generator,
-    total_n_reads: int, genome_abundances: dict, amplicon_dirichlet_parameter: int,
+    total_n_reads: int, genome_abundances: dict, amplicon_dirichlet_parameter: float,
     snv_dirichlet_parameter: int, snv_balance: float, decay_const: float
 ) -> pd.DataFrame:
-    """
-    You have the SNVs that were introduced by the PCR proces
-    You have the SNVs that were originally in the lineages (implement)
-
-    for each variation of each amplicon in each genome:
-        has error in primer? -> lower read count
-        keep track of the subtraction in read count
-        redistribute subtraction over amplicons for this genome
-    check how many reads off-target the sum
-        if over target: ignore
-        if under target: add read count
-    """
     amplicon_df = add_persistent_mutation_count(amplicon_df, os.path.join(temp_folder, "SNV1"))
     amplicon_df = add_persistent_mutation_count(amplicon_df, os.path.join(temp_folder, "SNV2"))
     amplicon_df.reset_index(inplace=True, drop=True)
@@ -56,94 +40,164 @@ def apply_bias(
     genome_counts = get_amplicon_count_per_genome(total_n_reads, genome_abundances, rng)
     amplicon_df["genome_n_reads"] = amplicon_df["ref"].map(genome_counts)
 
-    unique_snvs = sorted(amplicon_df["SNVs_in_primers"].unique())
-    unique_refs = amplicon_df["ref"].unique()
-
-    # Construct SNV dictionary
-    # = {0: 1, 1: 0.0001, 2: 0.0}
-    snv_dict: dict[str, dict[int, float]] = {
-        "hyperparams": {group: exp_decay(group, decay_const) for group in unique_snvs}
-    }
-    props = rng.dirichlet(
-        [hp * float(snv_dirichlet_parameter) for hp in snv_dict["hyperparams"].values()]
-    )
-    snv_dict["prop"] = {group: prop for group, prop in zip(unique_snvs, props)}
-
-    # Pull amplicon probabilities per genome from Dirichlet
-    SNV_groups_to_indices = amplicon_df.groupby(["ref", "SNVs_in_primers"]).indices
-
-    amplicon_df["amplicon_prop"] = 0.0
+    amplicon_df["snv_alphas"] = snv_dirichlet_parameter * np.exp(-amplicon_df["SNVs_in_primers"] * decay_const)
+    amplicon_df["amp_alphas"] = amplicon_df["hyperparameter"] * amplicon_dirichlet_parameter
     amplicon_df["n_reads"] = 0
 
-    amplicon_df["is_max"] = False
+    unique_refs = amplicon_df["ref"].unique()
 
     for genome in unique_refs:
         g_mask = amplicon_df["ref"] == genome
+        genome_amp_df = amplicon_df.loc[g_mask]
 
-        # assign proportion of genome's read count to each amplicon (variation)
-        amplicon_df.loc[g_mask, "amplicon_prop"] = rng.dirichlet(
-            amplicon_df.loc[g_mask, "hyperparameter"] * float(amplicon_dirichlet_parameter)
-        )
+        amp_props = rng.dirichlet(genome_amp_df["amp_alphas"])
+        snv_props = rng.dirichlet(genome_amp_df["snv_alphas"])
 
-        # mark which amplicon variation has the highest proportionality
-        amplicon_df.loc[g_mask, "is_max"] = amplicon_df.loc[g_mask, "amplicon_prop"].eq(
-            amplicon_df[g_mask].groupby(["amplicon_number", "alt_num_left", "alt_num_right"])["amplicon_prop"].transform('max'))
+        props = snv_balance*snv_props + (1-snv_balance)*amp_props
 
-    for key, indices in SNV_groups_to_indices.items():
-        genome, SNV_group = key
-        # What fraction of the genome reads should this SNV group get according to the decay function?
-        # -> snv_dict["prop"][group]
+        read_allocations = rng.multinomial(genome_counts[genome], props)
 
-        # What fraction of the genome reads should this SNV group get according to the fraction of amplicons in this group?
-        # amp_read_props = amplicon_df.loc[indices, "amplicon_prop"]
-        # only assign reads to the amplicon variations that occur in highest proportion
-
-        amp_read_props_all_vars = amplicon_df.loc[indices, ["amplicon_prop", "is_max"]]
-        amp_read_props_only_max = amp_read_props_all_vars.loc[amp_read_props_all_vars["is_max"]]["amplicon_prop"]
-
-        if amp_read_props_only_max.empty:
-            continue
-
-        # The number of reads that is allotted to this SNV group is a balance between these two fractions
-        snv_group_total = (
-            # (b * SNV_prop) + ((1-b) * amp_prop) * n_genome
-            (snv_balance) * snv_dict["prop"][SNV_group] + (1-snv_balance) * amp_read_props_all_vars["amplicon_prop"].sum()
-        ) * genome_counts[genome]
-
-        # Normalise the amplicon proportion for read allocation per amp in this SNV group
-        norm_amp_props = amp_read_props_only_max / amp_read_props_only_max.sum()  # pd.Series / float
-
-        allocations = rng.multinomial(snv_group_total, norm_amp_props)
-
-        # Assign read allocations to corresponding indices
-        amplicon_df.loc[amp_read_props_only_max.index, "n_reads"] = np.floor(allocations)
-        # amplicon_df.loc[indices, "n_reads"] = np.floor(allocations)
-
-    amplicon_df = amplicon_df.groupby(
-        ["ref", "amplicon_number", "alt_num_left", "alt_num_right"],
-        group_keys=False
-    ).apply(
-        partial(
-            distribute_reads_among_amp_vars,
-            # multi=multi,
-            rng=rng
-        )
-    )
+        amplicon_df.loc[g_mask, "amp_props"] = amp_props
+        amplicon_df.loc[g_mask, "snv_props"] = snv_props
+        amplicon_df.loc[g_mask, "props"] = props
+        amplicon_df.loc[g_mask, "n_reads"] = read_allocations
 
     return amplicon_df
 
 
-# def dedrop_amplicon(group: pd.DataFrame, rng: np.random.Generator):
-#     # n_reads = group["n_reads"].sum()  # total reads for this amplicon group (= [X, 0, 0, 0, ...])
-#     # props = group["amplicon_prop"].values
-#     # norm_props = props / props.sum()  # normalize for this group of variations
-#     # group["n_reads"] = rng.multinomial(n_reads, norm_props)
-#     # return group
-#     ...
+# def apply_bias(
+#     amplicon_df: pd.DataFrame, temp_folder: str, rng: np.random.Generator,
+#     total_n_reads: int, genome_abundances: dict, amplicon_dirichlet_parameter: int,
+#     snv_dirichlet_parameter: int, snv_balance: float, decay_const: float
+# ) -> pd.DataFrame:
+#     amplicon_df = add_persistent_mutation_count(amplicon_df, os.path.join(temp_folder, "SNV1"))
+#     amplicon_df = add_persistent_mutation_count(amplicon_df, os.path.join(temp_folder, "SNV2"))
+#     amplicon_df.reset_index(inplace=True, drop=True)
+
+#     amplicon_df["total_n_reads"] = total_n_reads
+#     genome_counts = get_amplicon_count_per_genome(total_n_reads, genome_abundances, rng)
+#     amplicon_df["genome_n_reads"] = amplicon_df["ref"].map(genome_counts)
+
+#     unique_snvs = sorted(amplicon_df["SNVs_in_primers"].unique())
+#     unique_refs = amplicon_df["ref"].unique()
+
+#     # Construct SNV dictionary
+#     # = {0: 1, 1: 0.0001, 2: 0.0}
+#     snv_dict: dict[str, dict[int, float]] = {
+#         "hyperparams": {group: exp_decay(group, decay_const) for group in unique_snvs}
+#     }
+#     props = rng.dirichlet(
+#         [hp * float(snv_dirichlet_parameter) for hp in snv_dict["hyperparams"].values()]
+#     )
+#     snv_dict["prop"] = {group: prop for group, prop in zip(unique_snvs, props)}
+
+#     # Pull amplicon probabilities per genome from Dirichlet
+#     SNV_groups_to_indices = amplicon_df.groupby(["ref", "SNVs_in_primers"]).indices
+
+#     amplicon_df["amplicon_prop"] = 0.0
+#     amplicon_df["n_reads"] = 0
+
+#     amplicon_df["is_max"] = False
+
+#     for genome in unique_refs:
+#         g_mask = amplicon_df["ref"] == genome
+
+#         # assign proportion of genome's read count to each amplicon (variation)
+#         amplicon_df.loc[g_mask, "amplicon_prop"] = rng.dirichlet(
+#             amplicon_df.loc[g_mask, "hyperparameter"] * float(amplicon_dirichlet_parameter)
+#         )
+
+#         # mark which amplicon variation has the highest proportionality
+#         # only those ones will get reads allocated to them.
+#         # afterwards, we divide the reads per amplicons over each variation
+#         amplicon_df.loc[g_mask, "is_max"] = amplicon_df.loc[g_mask, "amplicon_prop"].eq(
+#             amplicon_df[g_mask].groupby(["amplicon_number", "alt_num_left", "alt_num_right"])["amplicon_prop"].transform('max'))
+
+#     for key, indices in SNV_groups_to_indices.items():
+#         genome, SNV_group = key
+#         # What fraction of the genome reads should this SNV group get according to the decay function?
+#         # -> snv_dict["prop"][group]
+
+#         # What fraction of the genome reads should this SNV group get according to the fraction of amplicons in this group?
+#         # amp_read_props = amplicon_df.loc[indices, "amplicon_prop"]
+#         # only assign reads to the amplicon variations that occur in highest proportion
+
+#         amp_read_props_all_vars = amplicon_df.loc[indices, ["amplicon_prop", "is_max"]]
+#         amp_read_props_only_max = amp_read_props_all_vars.loc[amp_read_props_all_vars["is_max"]]["amplicon_prop"]
+
+#         if amp_read_props_only_max.empty:
+#             continue
+
+#         # The number of reads that is allotted to this SNV group is a balance between these two fractions
+#         snv_group_total = (
+#             # (b * SNV_prop) + ((1-b) * amp_prop) * n_genome
+#             (snv_balance) * snv_dict["prop"][SNV_group] + (1-snv_balance) *
+#             amp_read_props_all_vars["amplicon_prop"].sum()
+#         ) * genome_counts[genome]
+
+#         # Normalise the amplicon proportion for read allocation per amp in this SNV group
+#         norm_amp_props = amp_read_props_only_max / amp_read_props_only_max.sum()  # pd.Series / float
+
+#         allocations = rng.multinomial(snv_group_total, norm_amp_props)
+
+#         # Assign read allocations to corresponding indices
+#         amplicon_df.loc[amp_read_props_only_max.index, "n_reads"] = np.floor(allocations)
+
+#     return amplicon_df
 
 
-def correct_dropout_rate(amplicon_df: pd.DataFrame, rate: float, rng: np.random.Generator) -> pd.DataFrame:
-    ...
+def correct_dropout_rate(amplicon_df: pd.DataFrame, rate_mean: float, rate_std: float, rng: np.random.Generator) -> pd.DataFrame:
+    unique_refs = amplicon_df["ref"].unique()
+    indeces_to_drop = []
+    for genome in unique_refs:
+        g_mask = amplicon_df["ref"] == genome
+
+        # all amplicons that got the max proportionality of their variation in this genome
+        max_df = amplicon_df[amplicon_df["is_max"] & g_mask]
+        dropped_mask = max_df["n_reads"] == 0
+        n_curr_dropped_amps = dropped_mask.sum()
+        curr_drop_rate = n_curr_dropped_amps / max_df.shape[0]
+
+        if curr_drop_rate > rate_mean + 3*rate_std:
+            logging.warning(
+                f"{genome}: The current dropout rate is: {curr_drop_rate:.2f}. This is already >3 standard deviations (3*{rate_std}) larger than the given rate_mean ({rate_mean}). No extra amplicons will be dropped.")
+            continue
+
+        rate = rng.normal(rate_mean, rate_std)
+
+        if rate > 1:
+            logging.warning(
+                f"{genome}: The pulled dropout rate ({rate:.3f}) based on the given rate_mean ({rate_mean}) and rate_std ({rate_std}) was larger than 1.0 (100%). Pulled rate was ignored, because no sample with all dropped amplicons can exist.")
+            continue
+
+        if rate < 0:
+            logging.warning(
+                f"{genome}: The pulled dropout rate ({rate:.3f}) based on the given rate_mean ({rate_mean}) and rate_std ({rate_std}) was below 0.0. Pulled rate was ignored.")
+            continue
+
+        if curr_drop_rate > rate:
+            logging.warning(
+                f"{genome}: The current dropout rate is: {curr_drop_rate:.2f}. This is larger than the pulled rate ({rate:.3f}) based on the given rate_mean ({rate_mean}) and rate_std ({rate_std}). No extra amplicons will be dropped.")
+            continue
+
+        n_to_drop = int((rate * max_df.shape[0]) - n_curr_dropped_amps)
+
+        non_dropped = max_df[~dropped_mask].copy()
+
+        non_dropped["inv_reads"] = 1 / non_dropped["n_reads"]
+        non_dropped["drop_prob"] = non_dropped["inv_reads"] / non_dropped["inv_reads"].sum()
+        indeces_to_drop.extend(rng.choice(
+            a=non_dropped.index,
+            p=non_dropped["drop_prob"],
+            size=n_to_drop,
+            replace=False,
+            shuffle=False
+        ))
+
+    if len(indeces_to_drop) == 0:
+        return amplicon_df
+    amplicon_df.loc[indeces_to_drop, "n_reads"] = 0
+    return amplicon_df
 
 
 def add_persistent_mutation_count(amplicon_df: pd.DataFrame, snv_folder: str) -> pd.DataFrame:

@@ -28,11 +28,13 @@ nCOV19_clinical_simulated_1:
   ref_accessions:
     - MN908947.3
   primers: artic_v3_all_alt
-  c: 200
-  v: 200
+  c: 2000
+  v: 20
   b: 1
   score_thresh: 16
-  decay: 5
+  decay: 2
+  drop_mean: 0.120
+  drop_std: 0.100
   min_reads: 120_000
   max_reads: 220_000
   mem_mod: 0
@@ -45,11 +47,13 @@ nCOV19_clinical_simulated_2:
   ref_accessions:
     - MN908947.3
   primers: artic_v3_all_alt
-  c: 200
-  v: 200
+  c: 2000
+  v: 20
   b: 1
   score_thresh: 16
-  decay: 5
+  decay: 2
+  drop_mean: 0.120
+  drop_std: 0.100
   min_reads: 120_000
   max_reads: 220_000
   mem_mod: 0
@@ -62,11 +66,13 @@ DENV1_simulated:
   ref_accessions:
     - NC_001477.1
   primers: DENV1_primers
-  c: 200
-  v: 200
+  c: 400
+  v: 400
   b: 1
   score_thresh: 12
-  decay: 0.9
+  decay: 1.8
+  drop_mean: 0.000
+  drop_std: 0.000
   min_reads: 600_000
   max_reads: 1_100_000
   mem_mod: 1
@@ -82,7 +88,9 @@ DENV2_simulated:
   v: 200
   b: 1
   score_thresh: 12
-  decay: 2 # rerun
+  decay: 1.8
+  drop_mean: 0.000
+  drop_std: 0.000
   min_reads: 600_000
   max_reads: 1_100_000
   mem_mod: 1
@@ -98,7 +106,9 @@ DENV3_simulated:
   v: 200
   b: 1
   score_thresh: 12
-  decay: 0.8
+  decay: 1.8
+  drop_mean: 0.000
+  drop_std: 0.000
   min_reads: 600_000
   max_reads: 1_100_000
   mem_mod: 1
@@ -114,7 +124,9 @@ DENV4_simulated:
   v: 200
   b: 1
   score_thresh: 12
-  decay: 2 # rerun
+  decay: 1.2
+  drop_mean: 0.000
+  drop_std: 0.000
   min_reads: 600_000
   max_reads: 1_100_000
   mem_mod: 1

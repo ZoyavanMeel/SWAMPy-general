@@ -1,4 +1,5 @@
 import argparse
+from functools import partial
 from os.path import dirname, join, abspath, basename
 from time import perf_counter
 import os
@@ -11,7 +12,7 @@ import shutil
 
 from art_runner import art_illumina
 from create_amplicons import get_alignment_df_and_call_SNVs, write_amplicon
-from biases import load_amp_dist_file, apply_bias, correct_dropout_rate
+from biases import distribute_reads_among_amp_vars, load_amp_dist_file, apply_bias, correct_dropout_rate
 from errors import add_high_frequency_errors
 import helpers as hp
 
@@ -57,9 +58,12 @@ R_DEL_RATE = 0
 DEL_LENGTH_GEOMETRIC_PARAMETER = 0.69
 INS_MAX_LENGTH = 14
 
-# clinical   = 0.100
-# wastewater = 0.133
-DROPOUT_RATE = 0.100
+# clinical   = 0.120 +/- 0.100
+# wastewater = 0.160 +/- 0.100
+# denv       = 0.000 +/- 0.000
+
+DROPOUT_MEAN = 0.120
+DROPOUT_STD = 0.100
 
 SUBS_VAF_DIRICHLET_PARAMETER = "0.29,1.89"
 INS_VAF_DIRICHLET_PARAMETER = "0.33,0.45"
@@ -69,7 +73,7 @@ R_SUBS_VAF_DIRICHLET_PARAMETER = SUBS_VAF_DIRICHLET_PARAMETER
 R_INS_VAF_DIRICHLET_PARAMETER = INS_VAF_DIRICHLET_PARAMETER
 R_DEL_VAF_DIRICHLET_PARAMETER = DEL_VAF_DIRICHLET_PARAMETER
 
-SNV_BALANCE = 0.5
+SNV_BALANCE = 1.0
 SNV_DIRICHLET_PARAMETER = 200
 AMPLICON_DIRICHLET_PARAMETER = 200
 
@@ -92,8 +96,10 @@ def setup_parser() -> argparse.ArgumentParser:
     parser.add_argument("--primer_set", help="Primer set. This sets defaults for the parameters, --primers_file, --primer_bed, and --amplicon_distribution_file, which are overwritten if separately provided. Can be either a1 for Artic v1, a4 for Artic v4, a5 for Artic v5.3, and n2 for Nimagen v2, or c for custom (custom provides no defaults, so each of --primers_file, --primer_bed, and --amplicon_distribution_file must be provided separately)",
                         required=True, choices=["a1", "a4", "a5", "n2", "c"])
     parser.add_argument("--snv_balance", "-b", help="Indicates the balance between the given amplicon distribution and the calculated SNV-bias. Default: 0.5 (50/50). Max/min = 1.0/0.0. Increasing this parameter increases the weight of the SNV-bias", default=SNV_BALANCE)
-    parser.add_argument("--decay_const", help="Decay constant for the mutational exponential decay function (default=4)", default=DECAY_CONST)
-    parser.add_argument("--score_threshold", help="Minimum score threshold to set for primer to lineage alignment (-T in bwa mem) (default=16)", default=SCORE_THRESH)
+    parser.add_argument(
+        "--decay_const", help="Decay constant for the mutational exponential decay function (default=4)", default=DECAY_CONST)
+    parser.add_argument(
+        "--score_threshold", help="Minimum score threshold to set for primer to lineage alignment (-T in bwa mem) (default=16)", default=SCORE_THRESH)
     parser.add_argument("--no_align", help="Indicates what to do if none of the primers align to a given genome (options: ['raise', 'warn'], default: 'raise')",
                         default=NO_ALIGN)
     parser.add_argument("--primers_file",
@@ -118,8 +124,10 @@ def setup_parser() -> argparse.ArgumentParser:
         "--qprof2", help="Custom quality score profile for R1 reads (ART) - use with --seqSys=custom", default=QPROF2)
     parser.add_argument(
         "--n_reads", "-n", help="Approximate number of reads in fastq file (subject to sampling stochasticity).", default=N_READS)
-    parser.add_argument("--dropout_rate", "-d",
-                        help="Approximate percentage of amplicons dropped (subject to sampling stochasticity).", default=DROPOUT_RATE)
+    parser.add_argument(
+        "--dropout_mean", help="Mean fraction of amplicons dropped (sampled from Gaussian).", default=DROPOUT_MEAN)
+    parser.add_argument(
+        "--dropout_std", help="Standard deviation for the fraction of amplicons dropped (sampled from Gaussian).", default=DROPOUT_STD)
     parser.add_argument("--read_length", "-l",
                         help="Length of reads taken from the sequencing machine.", default=READ_LENGTH)
     parser.add_argument("--seed", "-s", help="Random seed integer (must be non-negative)")
@@ -211,10 +219,13 @@ def load_command_line_args() -> None:
     if SNV_BALANCE > 1.0 or SNV_BALANCE < 0.0:
         raise ValueError(f"snv_balance parameter can only be between 0.0 and 1.0, but was {SNV_BALANCE}")
 
-    global DROPOUT_RATE
-    DROPOUT_RATE = float(args.dropout_rate)
-    if DROPOUT_RATE > 1.0 or DROPOUT_RATE < 0.0:
-        raise ValueError(f"dropout_rate parameter can only be between 0.0 and 1.0, but was {DROPOUT_RATE}")
+    global DROPOUT_MEAN
+    DROPOUT_MEAN = float(args.dropout_mean)
+    if DROPOUT_MEAN > 1.0 or DROPOUT_MEAN < 0.0:
+        raise ValueError(f"dropout_mean parameter can only be between 0.0 and 1.0, but was {DROPOUT_MEAN}")
+
+    global DROPOUT_STD
+    DROPOUT_STD = float(args.dropout_std)
 
     global NO_ALIGN
     if args.no_align not in ["raise", "warn"]:
@@ -665,15 +676,22 @@ if __name__ == "__main__":
                     f'All aimed high-frequency errrors are written to "{OUTPUT_FOLDER}/{OUTPUT_FILENAME_PREFIX}_hf_errors.vcf"')
 
     # Now that we have each variation of amplicon and their corresponding 'hyperparameter',
-    # we can add the SNV-bias based on it and see how many reads of each ART has to generate.
+    # we can add the mutational bias based on it and see how many reads of each ART has to generate.
     if VERBOSE:
         logging.info(f"Adding SNV bias (balance={SNV_BALANCE})")
     amplicon_df = apply_bias(
         amplicon_df, TEMP_FOLDER, RNG, N_READS,
-        genome_abundances, AMPLICON_DIRICHLET_PARAMETER,
-        SNV_DIRICHLET_PARAMETER, SNV_BALANCE, DECAY_CONST
+        genome_abundances, float(AMPLICON_DIRICHLET_PARAMETER),
+        float(SNV_DIRICHLET_PARAMETER), SNV_BALANCE, DECAY_CONST
     )
-    # amplicon_df = correct_dropout_rate(amplicon_df, DROPOUT_RATE, RNG)
+    # amplicon_df = correct_dropout_rate(amplicon_df, DROPOUT_MEAN, DROPOUT_STD, RNG)
+
+    # amplicon_df = amplicon_df.groupby(
+    #     ["ref", "amplicon_number", "alt_num_left", "alt_num_right"], group_keys=False
+    # ).apply(partial(
+    #     distribute_reads_among_amp_vars,
+    #     rng=RNG
+    # ))
 
     # pick total numbers of reads for each amplicon
     # df_amplicons = apply_amplicon_reads_sampler(
@@ -693,7 +711,7 @@ if __name__ == "__main__":
     amplicon_df[[
         "ref", "amplicon_number", "alt_num_left", "alt_num_right", "var_num",
         "total_n_reads", "abundance", "genome_n_reads",
-        "hyperparameter", "amplicon_prop", "SNVs_in_primers", "n_reads"
+        "amp_alphas", "snv_alphas", "amp_props", "snv_props", "props", "SNVs_in_primers", "n_reads"
     ]].to_csv(join(OUTPUT_FOLDER, f"{OUTPUT_FILENAME_PREFIX}_amplicon_abundances_summary.tsv"), sep="\t")
 
     # STEP 4: Simulate Reads

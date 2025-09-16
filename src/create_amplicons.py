@@ -19,8 +19,10 @@ def get_alignment_df_and_call_SNVs(
 
     pool1_path, pool2_path = hp.split_primers_for_snv_pools(primer_bed, primer_fastq, temp_folder)
 
-    df_one = call_SNVs(ref_path, genome_filename_short, indices_folder, pool1_path, os.path.join(temp_folder, "SNV1"), score_thresh)
-    df_two = call_SNVs(ref_path, genome_filename_short, indices_folder, pool2_path, os.path.join(temp_folder, "SNV2"), score_thresh)
+    df_one = call_SNVs(ref_path, genome_filename_short, indices_folder,
+                       pool1_path, os.path.join(temp_folder, "SNV1"), score_thresh)
+    df_two = call_SNVs(ref_path, genome_filename_short, indices_folder,
+                       pool2_path, os.path.join(temp_folder, "SNV2"), score_thresh)
 
     df = pd.concat([df_one, df_two])
 
@@ -107,7 +109,7 @@ def call_SNVs(ref_path, genome_filename_short, indices_folder, primer_fastq, snv
     # to make that data persistent if we call SNVs now.
     sam_view_sam = subprocess.run(
         # remove sam header
-        ["samtools", "view", "-"],
+        ["samtools", "view", "-F", "0x800", "-"],
         input=bwa_alignment.stdout, stdout=subprocess.PIPE, stderr=subprocess.PIPE
     )
     alignment = sam_view_sam.stdout.decode()

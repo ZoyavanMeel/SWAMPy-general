@@ -35,11 +35,14 @@ rule simulate_single_sample:
         primer_fastq=f"../Master-Thesis-Project/data/primer_fastqs/{VIRUS_DICT['primers']}.fastq",
         primer_bed=f"../Master-Thesis-Project/data/primer_beds/{VIRUS_DICT['primers']}.bed",
         sample_genome=f"../Master-Thesis-Project/data/consensus/{VIRUS_DICT['consensus_set']}/{{sample}}.fa",
+        index_f=f"../Master-Thesis-Project/data/index/{VIRUS_DICT['reference_name']}.bwt",
+        ref=f"../Master-Thesis-Project/data/reference_sequences/{VIRUS_DICT['reference_name']}.fasta",
         sample_abundance=f"abundances/{VIRUS_NAME}/{{sample}}.tsv"
     output:
         fw=f"../Master-Thesis-Project/data/fastq_files/{VIRUS_NAME}/{{sample}}_1.fastq",
         rv=f"../Master-Thesis-Project/data/fastq_files/{VIRUS_NAME}/{{sample}}_2.fastq"
     params:
+        idx_base=f"../Master-Thesis-Project/data/index/{VIRUS_DICT['reference_name']}",
         output_dir=f"simulation_output/{VIRUS_NAME}/{{sample}}",
         c=VIRUS_DICT["c"],
         v=VIRUS_DICT["v"],
@@ -48,7 +51,8 @@ rule simulate_single_sample:
         n_min=VIRUS_DICT['min_reads'],
         n_max=VIRUS_DICT['max_reads'],
         score_thresh=VIRUS_DICT['score_thresh'],
-        ref=f"../Master-Thesis-Project/data/reference_sequences/{VIRUS_DICT['reference_name']}.fasta",
+        drop_mean=VIRUS_DICT['drop_mean'],
+        drop_std=VIRUS_DICT['drop_std'],
         vaf=""  # "--subs_VAF_alpha '9.28,0.945' --del_VAF_alpha '4.72,0.41' --ins_VAF_alpha '2.64,0.45'"
     group:
         "simulation_group"
@@ -58,10 +62,11 @@ rule simulate_single_sample:
         """
         python src/simulate_metagenome.py \
             --primer_set c \
-            --reference {params.ref} \
+            --reference {input.ref} \
             --primers_file {input.primer_fastq} \
             --primer_bed {input.primer_bed} \
             --genomes_file {input.sample_genome} \
+            --index_base {params.idx_base} \
             --genome_abundances {input.sample_abundance} \
             --output_filename_prefix {wildcards.sample} \
             --output_folder {params.output_dir} \
@@ -70,6 +75,8 @@ rule simulate_single_sample:
             -c {params.c} -v {params.v} \
             --decay_const {params.decay} \
             --score_threshold {params.score_thresh} \
+            --dropout_mean {params.drop_mean} \
+            --dropout_std {params.drop_std} \
             --autoremove \
             -n $(python -c "import random, re; random.seed(int(re.search(r'(\\d+)$', '{wildcards.sample}').group())); print(random.randint({params.n_min}, {params.n_max}))") \
             --seqSys MS \
