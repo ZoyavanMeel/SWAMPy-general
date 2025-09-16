@@ -42,6 +42,11 @@ def apply_bias(
     amplicon_df["genome_n_reads"] = amplicon_df["ref"].map(genome_counts)
 
     amplicon_df["snv_alphas"] = snv_dirichlet_parameter * np.exp(-amplicon_df["SNVs_in_primers"] * decay_const)
+
+    # four original+alt primer combos
+    alts = amplicon_df.loc[amplicon_df["alt_num_left"] == 2, "amplicon_number"].drop_duplicates()
+    amplicon_df.loc[amplicon_df["amplicon_number"].isin(alts), "snv_alphas"] /= 4
+
     amplicon_df["amp_alphas"] = amplicon_df["hyperparameter"] * amplicon_dirichlet_parameter
 
     amplicon_df["n_reads"] = 0
