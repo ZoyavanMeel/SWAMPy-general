@@ -686,12 +686,12 @@ if __name__ == "__main__":
     )
     # amplicon_df = correct_dropout_rate(amplicon_df, DROPOUT_MEAN, DROPOUT_STD, RNG)
 
-    # amplicon_df = amplicon_df.groupby(
-    #     ["ref", "amplicon_number", "alt_num_left", "alt_num_right"], group_keys=False
-    # ).apply(partial(
-    #     distribute_reads_among_amp_vars,
-    #     rng=RNG
-    # ))
+    amplicon_df = amplicon_df.groupby(
+        ["ref", "amplicon_number", "alt_num_left", "alt_num_right"], group_keys=False
+    ).apply(partial(
+        distribute_reads_among_amp_vars,
+        rng=RNG
+    ))
 
     # pick total numbers of reads for each amplicon
     # df_amplicons = apply_amplicon_reads_sampler(
