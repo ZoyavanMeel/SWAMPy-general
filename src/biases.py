@@ -397,5 +397,12 @@ def load_amp_dist_file(amplicon_distribution_file: str, primer_bed_path: str):
         amp_dist_df = set_alt_nums(pd.read_csv(amplicon_distribution_file, sep="\t"))
     else:
         amp_dist_df = hp.read_primer_bed(primer_bed_path)[["amplicon_number", "alt_num_left", "alt_num_right"]]
-        amp_dist_df["hyperparameter"] = 1/amp_dist_df.shape[0]
+
+        alts = amp_dist_df.loc[amp_dist_df["alt_num_left"] == 2, "amplicon_number"].drop_duplicates()
+        unique = amp_dist_df["amplicon_number"].unique()
+
+        normal_hyperparam = 1 / len(unique)
+        amp_dist_df["hyperparameter"] = normal_hyperparam
+        # four original+alt primer combos
+        amp_dist_df.loc[amp_dist_df["amplicon_number"].isin(alts), "hyperparamter"] = normal_hyperparam / 4
     return amp_dist_df
