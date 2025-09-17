@@ -17,3 +17,4 @@ abundances/
 .snakemake/
 slurm_logs/
 temp/
+supplementary_files/

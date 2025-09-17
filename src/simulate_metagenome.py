@@ -44,7 +44,7 @@ REF_NAME = "MN908947.3"
 REF_LEN = 29903
 INDEX_BASE = REFERENCE.strip(".fasta").strip("fa")
 
-DECAY_CONST = 4
+DECAY_CONST = 1
 
 # wastewater settings
 
@@ -679,6 +679,9 @@ if __name__ == "__main__":
     # we can add the mutational bias based on it and see how many reads of each ART has to generate.
     if VERBOSE:
         logging.info(f"Adding SNV bias (balance={SNV_BALANCE})")
+    if NO_PCR_ERRORS:
+        amplicon_df["SNVs_in_primers"] = 0
+        amplicon_df["var_num"] = 0
     amplicon_df = apply_bias(
         amplicon_df, TEMP_FOLDER, RNG, N_READS,
         genome_abundances, float(AMPLICON_DIRICHLET_PARAMETER),
