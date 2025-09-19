@@ -7,6 +7,16 @@ import numpy as np
 VIRUS_NAME = config["virus"]
 VIRUS_DICT = config[VIRUS_NAME]
 
+if config["cli_c"] != "empty":
+    VIRUS_DICT["c"] = config["cli_c"]
+if config["cli_v"] != "empty":
+    VIRUS_DICT["v"] = config["cli_v"]
+if config["cli_b"] != "empty":
+    VIRUS_DICT["b"] = config["cli_b"]
+if config["cli_decay"] != "empty":
+    VIRUS_DICT["decay"] = config["cli_decay"]
+
+
 N_THRESH = 0.05
 # FASTA_DIR = "../Master-Thesis-Project/data/consensus"
 
@@ -53,6 +63,7 @@ rule simulate_single_sample:
         score_thresh=VIRUS_DICT['score_thresh'],
         drop_mean=VIRUS_DICT['drop_mean'],
         drop_std=VIRUS_DICT['drop_std'],
+        pcr_err=VIRUS_DICT['pcr_err'],
         vaf=""  # "--subs_VAF_alpha '9.28,0.945' --del_VAF_alpha '4.72,0.41' --ins_VAF_alpha '2.64,0.45'"
     group:
         "simulation_group"
@@ -77,7 +88,7 @@ rule simulate_single_sample:
             --score_threshold {params.score_thresh} \
             --dropout_mean {params.drop_mean} \
             --dropout_std {params.drop_std} \
-            --autoremove \
+            --autoremove {params.pcr_err} \
             -n $(python -c "import random, re; random.seed(int(re.search(r'(\\d+)$', '{wildcards.sample}').group())); print(random.randint({params.n_min}, {params.n_max}))") \
             --seqSys MS \
             --no_align warn {params.vaf} 2> {log}

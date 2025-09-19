@@ -7,6 +7,10 @@
 #   primers: name of primers, no extension
 
 virus: nCOV19_clinical_simulated
+cli_v: "empty"
+cli_c: "empty"
+cli_b: "empty"
+cli_decay: "empty"
 
 
 nCOV19_synthetic:
@@ -28,11 +32,13 @@ nCOV19_clinical_simulated_1:
   ref_accessions:
     - MN908947.3
   primers: artic_v3_all_alt
-  c: 2000
-  v: 20
-  b: 1
+  c: 200
+  v: 1
+  b: 0.9
   score_thresh: 16
-  decay: 2
+  decay: 3 # 1.6 - equal amplif.
+  # pcr_err: -ins 0.00001 -del 0.0000625 -subs 0.0012425 -rins 0.00001 -rdel 0 -rsubs 0.0016785 -dl 0.345 -il 3
+  pcr_err: --no_pcr_errors
   drop_mean: 0.120
   drop_std: 0.100
   min_reads: 120_000
@@ -47,11 +53,13 @@ nCOV19_clinical_simulated_2:
   ref_accessions:
     - MN908947.3
   primers: artic_v3_all_alt
-  c: 2000
-  v: 20
-  b: 1
+  c: 150 # 200
+  v: 3
+  b: 0.995 # 1
   score_thresh: 16
-  decay: 2
+  decay: 3
+  # pcr_err: -ins 0.000005 -del 0.00003125 -subs 0.00062125 -rins 0.000005 -rdel 0 -rsubs 0.00083925 -dl 0.1725 -il 2
+  pcr_err: --no_pcr_errors
   drop_mean: 0.120
   drop_std: 0.100
   min_reads: 120_000

@@ -17,10 +17,16 @@ def sigmoid_decay(x): return 0.5 + 1 / (1 + np.exp(x))
 
 
 def distribute_reads_among_amp_vars(group: pd.DataFrame, rng: np.random.Generator):
+    if len(group["props"]) == 1:
+        return group
+
     # total reads for this amplicon group (= {"n_reads": [n, 0, 0, 0, ...], "is_max": [True, False, False, False, ...]})
     n_reads = group["n_reads"].sum()
     props = group["props"].values
     # props = group["amplicon_prop"].values
+
+    if props.sum() == 0:
+        return group
 
     norm_props = props / props.sum()  # normalize for this group of variations
 
@@ -57,8 +63,9 @@ def apply_bias(
         g_mask = amplicon_df["ref"] == genome
         genome_amp_df: pd.DataFrame = amplicon_df.loc[g_mask].copy()
 
-        amp_props = rng.dirichlet(genome_amp_df["amp_alphas"])
-        snv_props = rng.dirichlet(genome_amp_df["snv_alphas"])
+        # can't have alphas <= 0, so replacing them with 1e-24 is effectively the same
+        amp_props = rng.dirichlet(genome_amp_df["amp_alphas"].replace(0, 1e-24))
+        snv_props = rng.dirichlet(genome_amp_df["snv_alphas"].replace(0, 1e-24))
         props = snv_balance*snv_props + (1-snv_balance)*amp_props
 
         amplicon_df.loc[g_mask, "amp_props"] = amp_props
@@ -70,8 +77,11 @@ def apply_bias(
         # afterwards, we divide the reads per amplicons over each variation
         groupby = amplicon_df.loc[g_mask].groupby(["amplicon_number", "alt_num_left", "alt_num_right"])
         is_max = amplicon_df.loc[g_mask, "props"] == groupby["props"].transform('max')
-        read_allocations = rng.multinomial(genome_counts[genome], amplicon_df.loc[(g_mask & is_max), "props"])
 
+        max_props = amplicon_df.loc[(g_mask & is_max), "props"]
+        norm_props = max_props / max_props.sum()
+
+        read_allocations = rng.multinomial(genome_counts[genome], norm_props)
         amplicon_df.loc[(g_mask & is_max), "n_reads"] = read_allocations
 
     return amplicon_df

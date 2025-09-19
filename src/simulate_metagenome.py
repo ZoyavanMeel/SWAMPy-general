@@ -362,11 +362,11 @@ def load_command_line_args() -> None:
             exit(1)
 
     global AMPLICON_DIRICHLET_PARAMETER
-    AMPLICON_DIRICHLET_PARAMETER = int(args.amplicon_dirichlet_parameter)
+    AMPLICON_DIRICHLET_PARAMETER = float(args.amplicon_dirichlet_parameter)
     logging.info(f"Amplicon dirichlet_parameter: {AMPLICON_DIRICHLET_PARAMETER}")
 
     global SNV_DIRICHLET_PARAMETER
-    SNV_DIRICHLET_PARAMETER = int(args.snv_dirichlet_parameter)
+    SNV_DIRICHLET_PARAMETER = float(args.snv_dirichlet_parameter)
     logging.info(f"SNV dirichlet_parameter: {SNV_DIRICHLET_PARAMETER}")
 
     global AUTOREMOVE
