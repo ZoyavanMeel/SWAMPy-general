@@ -251,6 +251,9 @@ This is not a significant problem if you see only one of this warning. It likely
     errors.sort_values("pos", inplace=True)
     vcf_errordf = errors.loc[:, ["chr", "pos_1", "id", "ref", "alt", "qual", "filter", "info"]]
     expanded_df_amplicons = pd.DataFrame(split_rows)
+    # .set_index(
+    #     ["ref", "amplicon_number", "alt_num_left", "alt_num_right", "var_num"]
+    # ).sort_index()
     return expanded_df_amplicons, vcf_errordf
 
 

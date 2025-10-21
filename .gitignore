@@ -18,3 +18,10 @@ abundances/
 slurm_logs/
 temp/
 supplementary_files/
+iteration_wildcard/
+synthetic_fastas/
+gridsearch_denv.sh
+gridsearch_sars.sh
+simulate_analyse_sars_gridsearch.sh
+simulate_analyse_denv_gridsearch.sh
+run_DENV.sh

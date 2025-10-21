@@ -22,12 +22,7 @@ DENOM = config["denom"]
 N_THRESH = 0.05
 
 def get_sample_names_from_consensus_fastas(wildcards: dict) -> list[str]:
-    lst = []
-    with open(f"../Master-Thesis-Project/data/n_percentage_consensus/n_percentage_{VIRUS_DICT['consensus_set']}.tsv") as fh:
-        for line in fh.readlines():
-            accession, percentage = line.strip().split("\t")
-            if float(percentage) <= N_THRESH:
-                lst.append(accession)
+    lst = [f.strip(".fa") for f in os.listdir(f"synthetic_fastas")]
     if FRAC == "empty":
         return lst
     l = int(len(lst) / int(DENOM))
@@ -37,26 +32,37 @@ def get_sample_names_from_consensus_fastas(wildcards: dict) -> list[str]:
 rule all:
     input:
         expand(
-            "../Master-Thesis-Project/data/fastq_files/{virus}/{sample}_{orient}.fastq",
+            "../Master-Thesis-Project/data/fastq_files/{virus}/{sample}_{iteration}_{orient}.fastq",
             sample=get_sample_names_from_consensus_fastas,
+            iteration=range(1, 11),
             orient=[1, 2],
             virus=[VIRUS_NAME]
         )
 
+
+rule ugh:
+    output:
+        "iteration_wildcard/{iteration}.txt"
+    group:
+        "simulation_group"
+    shell:
+        "touch {output}"
+
 rule simulate_single_sample:
     input:
+        iteration="iteration_wildcard/{iteration}.txt",
         primer_fastq=f"../Master-Thesis-Project/data/primer_fastqs/{VIRUS_DICT['primers']}.fastq",
         primer_bed=f"../Master-Thesis-Project/data/primer_beds/{VIRUS_DICT['primers']}.bed",
-        sample_genome=f"../Master-Thesis-Project/data/consensus/{VIRUS_DICT['consensus_set']}/{{sample}}.fa",
+        sample_genome=f"synthetic_fastas/{{sample}}.fa",
         index_f=f"../Master-Thesis-Project/data/index/{VIRUS_DICT['reference_name']}.bwt",
         ref=f"../Master-Thesis-Project/data/reference_sequences/{VIRUS_DICT['reference_name']}.fasta",
-        sample_abundance=f"abundances/{VIRUS_NAME}/{{sample}}.tsv"
+        sample_abundance=f"abundances/{VIRUS_NAME}/{{sample}}.tsv",
     output:
-        fw=f"../Master-Thesis-Project/data/fastq_files/{VIRUS_NAME}/{{sample}}_1.fastq",
-        rv=f"../Master-Thesis-Project/data/fastq_files/{VIRUS_NAME}/{{sample}}_2.fastq"
+        fw=f"../Master-Thesis-Project/data/fastq_files/{VIRUS_NAME}/{{sample}}_{{iteration}}_1.fastq",
+        rv=f"../Master-Thesis-Project/data/fastq_files/{VIRUS_NAME}/{{sample}}_{{iteration}}_2.fastq"
     params:
         idx_base=f"../Master-Thesis-Project/data/index/{VIRUS_DICT['reference_name']}",
-        output_dir=f"simulation_output/{VIRUS_NAME}/{{sample}}",
+        output_dir=f"simulation_output/{VIRUS_NAME}/{{sample}}_{{iteration}}",
         c=VIRUS_DICT["c"],
         v=VIRUS_DICT["v"],
         b=VIRUS_DICT["b"],
@@ -71,7 +77,7 @@ rule simulate_single_sample:
     group:
         "simulation_group"
     log:
-        f"logs/simulate/{VIRUS_NAME}/{{sample}}.log"
+        f"logs/simulate/{VIRUS_NAME}/{{sample}}_{{iteration}}.log"
     shell:
         """
         python src/simulate_metagenome.py \
@@ -82,34 +88,23 @@ rule simulate_single_sample:
             --genomes_file {input.sample_genome} \
             --index_base {params.idx_base} \
             --genome_abundances {input.sample_abundance} \
-            --output_filename_prefix {wildcards.sample} \
+            --output_filename_prefix {wildcards.sample}_{wildcards.iteration} \
             --output_folder {params.output_dir} \
-            --temp_folder "temp/{wildcards.sample}/" \
+            --temp_folder "temp/{wildcards.sample}_{wildcards.iteration}/" \
             --snv_balance {params.b} \
             -c {params.c} -v {params.v} \
             --decay_const {params.decay} \
             --score_threshold {params.score_thresh} \
+            --dropout_mean {params.drop_mean} \
+            --dropout_std {params.drop_std} \
             --autoremove {params.pcr_err} \
-            -n $(python -c "import random, re; random.seed(int(re.search(r'(\\d+)$', '{wildcards.sample}').group())); print(random.randint({params.n_min}, {params.n_max}))") \
+            -n $(python -c "import random, re; random.seed(int(re.search(r'(\\d+)$', '{wildcards.sample}').group())+int({wildcards.iteration})); print(random.randint({params.n_min}, {params.n_max}))") \
             --seqSys MS \
             --no_align warn {params.vaf} 2> {log}
-        if [ ! -f {params.output_dir}/{wildcards.sample}_R1.fastq ]; then
-            touch {params.output_dir}/{wildcards.sample}_R1.fastq
-            touch {params.output_dir}/{wildcards.sample}_R2.fastq
+        if [ ! -f {params.output_dir}/{wildcards.sample}_{wildcards.iteration}_R1.fastq ]; then
+            touch {params.output_dir}/{wildcards.sample}_{wildcards.iteration}_R1.fastq
+            touch {params.output_dir}/{wildcards.sample}_{wildcards.iteration}_R2.fastq
         fi
-        mv {params.output_dir}/{wildcards.sample}_R1.fastq {output.fw}
-        mv {params.output_dir}/{wildcards.sample}_R2.fastq {output.rv}
+        mv {params.output_dir}/{wildcards.sample}_{wildcards.iteration}_R1.fastq {output.fw}
+        mv {params.output_dir}/{wildcards.sample}_{wildcards.iteration}_R2.fastq {output.rv}
         """
-
-rule make_abundance_file_single_genome:
-    input:
-        genome=f"../Master-Thesis-Project/data/consensus/{VIRUS_DICT['consensus_set']}/{{sample}}.fa"
-    output:
-        f"abundances/{VIRUS_NAME}/{{sample}}.tsv"
-    group:
-        "simulation_group"
-    run:
-        with open(input["genome"], "r") as readh:
-            name = readh.readline().strip(">\n")
-            with open(output[0], "w") as writeh:
-                writeh.write(f"{name}\t1.0")

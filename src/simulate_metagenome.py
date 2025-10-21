@@ -12,7 +12,7 @@ import shutil
 
 from art_runner import art_illumina
 from create_amplicons import get_alignment_df_and_call_SNVs, write_amplicon
-from biases import distribute_reads_among_amp_vars, load_amp_dist_file, apply_bias, correct_dropout_rate
+from biases import distribute_reads_among_amp_vars, load_amp_dist_file, apply_bias, environmental_dropout
 from errors import add_high_frequency_errors
 import helpers as hp
 
@@ -62,8 +62,7 @@ INS_MAX_LENGTH = 14
 # wastewater = 0.160 +/- 0.100
 # denv       = 0.000 +/- 0.000
 
-DROPOUT_MEAN = 0.120
-DROPOUT_STD = 0.100
+DROPOUT_RATE = 0.120
 
 SUBS_VAF_DIRICHLET_PARAMETER = "0.29,1.89"
 INS_VAF_DIRICHLET_PARAMETER = "0.33,0.45"
@@ -125,9 +124,7 @@ def setup_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--n_reads", "-n", help="Approximate number of reads in fastq file (subject to sampling stochasticity).", default=N_READS)
     parser.add_argument(
-        "--dropout_mean", help="Mean fraction of amplicons dropped (sampled from Gaussian).", default=DROPOUT_MEAN)
-    parser.add_argument(
-        "--dropout_std", help="Standard deviation for the fraction of amplicons dropped (sampled from Gaussian).", default=DROPOUT_STD)
+        "--env_drop_frac", help="Fraction of amplicons to be dropped due to target absence (sampled from binomial; uniformly chosen).", default=DROPOUT_RATE)
     parser.add_argument("--read_length", "-l",
                         help="Length of reads taken from the sequencing machine.", default=READ_LENGTH)
     parser.add_argument("--seed", "-s", help="Random seed integer (must be non-negative)")
@@ -175,6 +172,8 @@ def setup_parser() -> argparse.ArgumentParser:
                         help="alpha1,alpha2 of the Dirichlet distribution for VAF of the recurrent PCR error. Default is equal to unique erros", default=INS_VAF_DIRICHLET_PARAMETER)
     parser.add_argument("--disallowed_positions", "-dis",
                         help="A comma separated list of 0 based genome coordinates (relative to the reference genome) where substitutions and deletions are not allowed.", default=DISALLOWED_POSITIONS)
+    parser.add_argument("--summary_only",
+                        help="Only generate the summary file. Do not simulate reads", action="store_true")
     return parser
 
 
@@ -219,13 +218,10 @@ def load_command_line_args() -> None:
     if SNV_BALANCE > 1.0 or SNV_BALANCE < 0.0:
         raise ValueError(f"snv_balance parameter can only be between 0.0 and 1.0, but was {SNV_BALANCE}")
 
-    global DROPOUT_MEAN
-    DROPOUT_MEAN = float(args.dropout_mean)
-    if DROPOUT_MEAN > 1.0 or DROPOUT_MEAN < 0.0:
-        raise ValueError(f"dropout_mean parameter can only be between 0.0 and 1.0, but was {DROPOUT_MEAN}")
-
-    global DROPOUT_STD
-    DROPOUT_STD = float(args.dropout_std)
+    global DROPOUT_RATE
+    DROPOUT_RATE = float(args.env_drop_frac)
+    if DROPOUT_RATE > 1.0 or DROPOUT_RATE < 0.0:
+        raise ValueError(f"env_drop_frac parameter can only be between 0.0 and 1.0, but was {DROPOUT_RATE}")
 
     global NO_ALIGN
     if args.no_align not in ["raise", "warn"]:
@@ -330,6 +326,9 @@ def load_command_line_args() -> None:
 
     global VERBOSE
     VERBOSE = not args.quiet
+
+    global SUMMARY_ONLY
+    SUMMARY_ONLY = args.summary_only
 
     global FRAGMENT_AMPLICONS
     FRAGMENT_AMPLICONS = args.fragment_amplicons
@@ -680,6 +679,7 @@ if __name__ == "__main__":
     if VERBOSE:
         logging.info(f"Adding SNV bias (balance={SNV_BALANCE})")
     if NO_PCR_ERRORS:
+        # No SNVs_in_primers *added by the error function*. Already existing SNVs are added in `apply_bias`
         amplicon_df["SNVs_in_primers"] = 0
         amplicon_df["var_num"] = 0
     amplicon_df = apply_bias(
@@ -687,35 +687,28 @@ if __name__ == "__main__":
         genome_abundances, float(AMPLICON_DIRICHLET_PARAMETER),
         float(SNV_DIRICHLET_PARAMETER), SNV_BALANCE, DECAY_CONST
     )
-    # amplicon_df = correct_dropout_rate(amplicon_df, DROPOUT_MEAN, DROPOUT_STD, RNG)
+    amplicon_df = environmental_dropout(amplicon_df, DROPOUT_RATE, RNG)
 
     amplicon_df = amplicon_df.groupby(
-        ["ref", "amplicon_number", "alt_num_left", "alt_num_right"], group_keys=False
+        level=amplicon_df.index.names[:-1],  # groupby all except "var_num"
+        group_keys=False
     ).apply(partial(
         distribute_reads_among_amp_vars,
         rng=RNG
     ))
 
-    # pick total numbers of reads for each amplicon
-    # df_amplicons = apply_amplicon_reads_sampler(
-    #     df_amplicons,
-    #     AMPLICON_DISTRIBUTION,
-    #     amp_dist_df,
-    #     AMPLICON_DIRICHLET_PARAMETER,
-    #     genome_abundances,
-    #     N_READS,
-    #     RNG
-    # )
-    # df_amplicons.reset_index(drop=True, inplace=True)
     if VERBOSE:
         logging.info(f"Total number of reads was {sum(amplicon_df['n_reads'])}, when {N_READS} was expected.")
 
     # write a summary csv
     amplicon_df[[
-        "ref", "amplicon_number", "alt_num_left", "alt_num_right", "var_num",
-        "total_n_reads", "abundance", "genome_n_reads",
-        "amp_alphas", "snv_alphas", "amp_props", "snv_props", "props", "SNVs_in_primers", "n_reads"
+        "total_n_reads", "abundance", "genome_n_reads", "amp_alphas", "snv_alphas", "amp_props", "snv_props", "props", "SNVs_in_primers", "n_reads"
     ]].to_csv(join(OUTPUT_FOLDER, f"{OUTPUT_FILENAME_PREFIX}_amplicon_abundances_summary.tsv"), sep="\t")
+    logging.info(
+        f"Saved summary to: {join(OUTPUT_FOLDER, f"{OUTPUT_FILENAME_PREFIX}_amplicon_abundances_summary.tsv")}")
+    if SUMMARY_ONLY:
+        logging.info("Done! (No simulation; only summary)")
+        quit()
 
     # STEP 4: Simulate Reads
     filepaths, n_reads = format_ART_input(

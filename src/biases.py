@@ -41,6 +41,7 @@ def apply_bias(
 ) -> pd.DataFrame:
     amplicon_df = add_persistent_mutation_count(amplicon_df, os.path.join(temp_folder, "SNV1"))
     amplicon_df = add_persistent_mutation_count(amplicon_df, os.path.join(temp_folder, "SNV2"))
+
     amplicon_df.reset_index(inplace=True, drop=True)
 
     amplicon_df["total_n_reads"] = total_n_reads
@@ -84,7 +85,7 @@ def apply_bias(
         read_allocations = rng.multinomial(genome_counts[genome], norm_props)
         amplicon_df.loc[(g_mask & is_max), "n_reads"] = read_allocations
 
-    return amplicon_df
+    return amplicon_df.set_index(["ref", "amplicon_number", "alt_num_left", "alt_num_right", "var_num"]).sort_index()
 
 
 # def apply_bias(
@@ -168,57 +169,30 @@ def apply_bias(
 #     return amplicon_df
 
 
-def correct_dropout_rate(amplicon_df: pd.DataFrame, rate_mean: float, rate_std: float, rng: np.random.Generator) -> pd.DataFrame:
-    unique_refs = amplicon_df["ref"].unique()
-    indeces_to_drop = []
+def environmental_dropout(amplicon_df: pd.DataFrame, rate: float, rng: np.random.Generator) -> pd.DataFrame:
+    """This function simulates amplicon dropout by target absence"""
+    unique_refs = amplicon_df.index.get_level_values("ref").unique()
+    indices_to_drop = []
     for genome in unique_refs:
-        g_mask = amplicon_df["ref"] == genome
+        g_df = amplicon_df.xs(key=genome, level="ref", drop_level=False)
 
-        # all amplicons that got the max proportionality of their variation in this genome
-        max_df = amplicon_df[amplicon_df["is_max"] & g_mask]
-        dropped_mask = max_df["n_reads"] == 0
-        n_curr_dropped_amps = dropped_mask.sum()
-        curr_drop_rate = n_curr_dropped_amps / max_df.shape[0]
+        # all amplicons that got the max proportionality of their variation in this genome (the only ones wih reads right now)
+        groupby = g_df.groupby(level=["amplicon_number", "alt_num_left", "alt_num_right"])
+        is_max = g_df["props"] == groupby["props"].transform('max')
+        max_df = g_df[is_max]
 
-        if curr_drop_rate > rate_mean + 3*rate_std:
-            logging.warning(
-                f"{genome}: The current dropout rate is: {curr_drop_rate:.2f}. This is already >3 standard deviations (3*{rate_std}) larger than the given rate_mean ({rate_mean}). No extra amplicons will be dropped.")
-            continue
-
-        rate = rng.normal(rate_mean, rate_std)
-
-        if rate > 1:
-            logging.warning(
-                f"{genome}: The pulled dropout rate ({rate:.3f}) based on the given rate_mean ({rate_mean}) and rate_std ({rate_std}) was larger than 1.0 (100%). Pulled rate was ignored, because no sample with all dropped amplicons can exist.")
-            continue
-
-        if rate < 0:
-            logging.warning(
-                f"{genome}: The pulled dropout rate ({rate:.3f}) based on the given rate_mean ({rate_mean}) and rate_std ({rate_std}) was below 0.0. Pulled rate was ignored.")
-            continue
-
-        if curr_drop_rate > rate:
-            logging.warning(
-                f"{genome}: The current dropout rate is: {curr_drop_rate:.2f}. This is larger than the pulled rate ({rate:.3f}) based on the given rate_mean ({rate_mean}) and rate_std ({rate_std}). No extra amplicons will be dropped.")
-            continue
-
-        n_to_drop = int((rate * max_df.shape[0]) - n_curr_dropped_amps)
-
-        non_dropped = max_df[~dropped_mask].copy()
-
-        non_dropped["inv_reads"] = 1 / non_dropped["n_reads"]
-        non_dropped["drop_prob"] = non_dropped["inv_reads"] / non_dropped["inv_reads"].sum()
-        indeces_to_drop.extend(rng.choice(
-            a=non_dropped.index,
-            p=non_dropped["drop_prob"],
-            size=n_to_drop,
+        N_amps_to_drop = rng.binomial(max_df.shape[0], rate)
+        indices = rng.choice(
+            a=max_df.index,
+            size=N_amps_to_drop,
             replace=False,
             shuffle=False
-        ))
+        )
+        indices_to_drop.extend(indices)
 
-    if len(indeces_to_drop) == 0:
+    if len(indices_to_drop) == 0:
         return amplicon_df
-    amplicon_df.loc[indeces_to_drop, "n_reads"] = 0
+    amplicon_df.loc[indices_to_drop, "n_reads"] = 0
     return amplicon_df
 
 

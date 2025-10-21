@@ -11,17 +11,25 @@ cli_v: "empty"
 cli_c: "empty"
 cli_b: "empty"
 cli_decay: "empty"
+frac: "empty"
+denom: 4
 
 
-nCOV19_synthetic:
+nCOV19_synthetic_simulated:
   reference_name: nCOV19_clinical_reference
+  consensus_set: nCOV19_synthetic
   ref_accessions:
     - MN908947.3
   primers: artic_v3_all_alt
-  has_alts: True
-  need_singleton_extraction: False
-  bioprojects:
-    - PRJNA737419
+  c: 150
+  v: 1
+  b: 1
+  score_thresh: 16
+  decay: 1
+  # pcr_err: -ins 0.00001 -del 0.0000625 -subs 0.0012425 -rins 0.00001 -rdel 0 -rsubs 0.0016785 -dl 0.345 -il 3
+  pcr_err: --no_pcr_errors
+  min_reads: 60_000
+  max_reads: 300_000
   mem_mod: 0
   time_mod: 0
 
@@ -32,15 +40,13 @@ nCOV19_clinical_simulated_1:
   ref_accessions:
     - MN908947.3
   primers: artic_v3_all_alt
-  c: 200
+  c: 150
   v: 1
-  b: 0.9
+  b: 1
   score_thresh: 16
-  decay: 3 # 1.6 - equal amplif.
+  decay: 1
   # pcr_err: -ins 0.00001 -del 0.0000625 -subs 0.0012425 -rins 0.00001 -rdel 0 -rsubs 0.0016785 -dl 0.345 -il 3
   pcr_err: --no_pcr_errors
-  drop_mean: 0.120
-  drop_std: 0.100
   min_reads: 120_000
   max_reads: 220_000
   mem_mod: 0
@@ -54,14 +60,12 @@ nCOV19_clinical_simulated_2:
     - MN908947.3
   primers: artic_v3_all_alt
   c: 150 # 200
-  v: 3
-  b: 0.995 # 1
+  v: 1
+  b: 1
   score_thresh: 16
-  decay: 3
+  decay: 1
   # pcr_err: -ins 0.000005 -del 0.00003125 -subs 0.00062125 -rins 0.000005 -rdel 0 -rsubs 0.00083925 -dl 0.1725 -il 2
   pcr_err: --no_pcr_errors
-  drop_mean: 0.120
-  drop_std: 0.100
   min_reads: 120_000
   max_reads: 220_000
   mem_mod: 0
@@ -75,12 +79,11 @@ DENV1_simulated:
     - NC_001477.1
   primers: DENV1_primers
   c: 400
-  v: 400
+  v: 1
   b: 1
   score_thresh: 12
-  decay: 1.8
-  drop_mean: 0.000
-  drop_std: 0.000
+  decay: 0.1
+  pcr_err: --no_pcr_errors
   min_reads: 600_000
   max_reads: 1_100_000
   mem_mod: 1
@@ -92,15 +95,14 @@ DENV2_simulated:
   ref_accessions:
     - NC_001474.2
   primers: DENV2_primers
-  c: 200
-  v: 200
+  c: 400
+  v: 1
   b: 1
   score_thresh: 12
-  decay: 1.8
-  drop_mean: 0.000
-  drop_std: 0.000
-  min_reads: 600_000
-  max_reads: 1_100_000
+  decay: 0.1
+  pcr_err: --no_pcr_errors
+  min_reads: 300_000
+  max_reads: 650_000
   mem_mod: 1
   time_mod: 1
 
@@ -110,13 +112,12 @@ DENV3_simulated:
   ref_accessions:
     - NC_001475.2
   primers: DENV3_primers
-  c: 200
-  v: 200
+  c: 400
+  v: 1
   b: 1
   score_thresh: 12
-  decay: 1.8
-  drop_mean: 0.000
-  drop_std: 0.000
+  decay: 0.1
+  pcr_err: --no_pcr_errors
   min_reads: 600_000
   max_reads: 1_100_000
   mem_mod: 1
@@ -128,13 +129,12 @@ DENV4_simulated:
   ref_accessions:
     - NC_002640.1
   primers: DENV4_primers
-  c: 200
-  v: 200
+  c: 400
+  v: 1
   b: 1
   score_thresh: 12
-  decay: 1.2
-  drop_mean: 0.000
-  drop_std: 0.000
+  decay: 0.1
+  pcr_err: --no_pcr_errors
   min_reads: 600_000
   max_reads: 1_100_000
   mem_mod: 1
