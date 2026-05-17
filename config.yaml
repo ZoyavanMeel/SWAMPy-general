@@ -45,7 +45,6 @@ nCOV19_clinical_simulated_1:
   b: 1
   score_thresh: 16
   decay: 1
-  # pcr_err: -ins 0.00001 -del 0.0000625 -subs 0.0012425 -rins 0.00001 -rdel 0 -rsubs 0.0016785 -dl 0.345 -il 3
   pcr_err: --no_pcr_errors
   min_reads: 120_000
   max_reads: 220_000
@@ -64,7 +63,6 @@ nCOV19_clinical_simulated_2:
   b: 1
   score_thresh: 16
   decay: 1
-  # pcr_err: -ins 0.000005 -del 0.00003125 -subs 0.00062125 -rins 0.000005 -rdel 0 -rsubs 0.00083925 -dl 0.1725 -il 2
   pcr_err: --no_pcr_errors
   min_reads: 120_000
   max_reads: 220_000
